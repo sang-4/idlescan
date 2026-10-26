@@ -108,6 +108,26 @@ def build_parser() -> argparse.ArgumentParser:
     tokens.add_argument("--chains-file", type=Path)
     tokens.add_argument("--json", action="store_true")
 
+    registry = sub.add_parser(
+        "registry", help="validate, import and export the airdrops registry"
+    )
+    registry_sub = registry.add_subparsers(dest="registry_command", required=True)
+    registry_import = registry_sub.add_parser(
+        "import", help="validate a registry file against the schema and chains"
+    )
+    registry_import.add_argument("source", help="registry JSON file path or https URL")
+    registry_import.add_argument("--chains-file", type=Path)
+    registry_import.add_argument("--schema", type=Path, help="JSON schema file (default: bundled)")
+    registry_import.add_argument("--json", action="store_true")
+    registry_import.add_argument("--env-file", type=Path)
+    registry_export = registry_sub.add_parser(
+        "export", help="export the bundled registry to a file"
+    )
+    registry_export.add_argument("out", type=Path, help="output file path")
+    registry_export.add_argument("--registry", type=Path, help="registry JSON to export (default: bundled)")
+    registry_export.add_argument("--json", action="store_true")
+    registry_export.add_argument("--env-file", type=Path)
+
     serve = sub.add_parser("serve", help="run the web UI and JSON API")
     serve.add_argument("--host", help="bind address (default: IDLESCAN_HOST or 127.0.0.1)")
     serve.add_argument("--port", type=int, help="port (default: IDLESCAN_PORT or 8787)")
@@ -870,6 +890,122 @@ def cmd_calendar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_registry(args: argparse.Namespace) -> int:
+    from . import __version__
+    from .registry import ConfigError, parse_registry
+    from .safe_http import FetchError, safe_fetch_json
+    from .chains import DATA_DIR, load_chains
+
+    if args.registry_command == "export":
+        registry_path = args.registry
+        if registry_path is None:
+            registry_path = DATA_DIR / "airdrops.json"
+        try:
+            data = json.loads(registry_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: cannot read registry {registry_path}: {exc}", file=sys.stderr)
+            return 2
+        target = args.out
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, indent=2) + "\n")
+        if args.json:
+            print(json.dumps({"path": str(target), "bytes": target.stat().st_size}, indent=2))
+        else:
+            print(f"wrote registry to {target} ({target.stat().st_size:,} bytes)")
+        return 0
+
+    if args.registry_command == "import":
+        chains = load_chains(args.chains_file)
+
+        # Read source (file or https URL)
+        source = args.source
+        is_url = source.startswith("http://") or source.startswith("https://")
+        if is_url:
+            try:
+                data = safe_fetch_json(source)
+            except FetchError as exc:
+                print(f"error: cannot fetch {source}: {exc}", file=sys.stderr)
+                return 2
+        else:
+            try:
+                data = json.loads(Path(source).read_text())
+            except FileNotFoundError:
+                print(f"error: registry file not found: {source}", file=sys.stderr)
+                return 2
+            except json.JSONDecodeError as exc:
+                print(f"error: {source}: invalid JSON ({exc})", file=sys.stderr)
+                return 2
+
+        if not isinstance(data, dict):
+            print(f"error: registry must be a JSON object", file=sys.stderr)
+            return 2
+
+        # Basic schema validation
+        problems = _validate_registry_shape(data)
+        if problems:
+            for problem in problems:
+                print(f"schema: {problem}", file=sys.stderr)
+            return 2
+
+        # Parse against chains
+        try:
+            drops = parse_registry(data, chains)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+        accepted = len(drops)
+        total = len(data.get("airdrops") or [])
+        rejected = total - accepted
+        if args.json:
+            print(json.dumps({
+                "source": source,
+                "accepted": accepted,
+                "rejected": rejected,
+                "drops": [{"id": d.id, "chain": d.chain, "distributor": d.distributor} for d in drops],
+            }, indent=2))
+        else:
+            print(f"registry import: {accepted} accepted, {rejected} rejected")
+            for d in drops:
+                print(f"  OK   {d.id:<30} {d.chain:<12} {d.distributor}")
+        return 0
+
+    print(f"error: unknown registry command {args.registry_command!r}", file=sys.stderr)
+    return 2
+
+
+def _validate_registry_shape(data: dict) -> list[str]:
+    """Basic structural validation of a registry document."""
+    problems: list[str] = []
+    airdrops = data.get("airdrops")
+    if not isinstance(airdrops, list):
+        problems.append("'airdrops' must be an array")
+        return problems
+    seen: set[str] = set()
+    for index, raw in enumerate(airdrops):
+        where = f"airdrops[{index}]"
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: must be an object")
+            continue
+        drop_id = raw.get("id")
+        if not isinstance(drop_id, str) or not drop_id:
+            problems.append(f"{where}: missing or empty 'id'")
+            continue
+        if drop_id in seen:
+            problems.append(f"{where}: duplicate id {drop_id!r}")
+        seen.add(drop_id)
+        for field in ("chain", "distributor"):
+            if not raw.get(field):
+                problems.append(f"{where}: missing '{field}'")
+        distributor = raw.get("distributor", "")
+        if distributor and not distributor.lower().startswith("0x"):
+            problems.append(f"{where}: distributor must be a 0x-prefixed address")
+        token = raw.get("token")
+        if token and not token.lower().startswith("0x"):
+            problems.append(f"{where}: token must be a 0x-prefixed address")
+    return problems
+
+
 def _db_path(args: argparse.Namespace) -> Path:
     settings = _settings(args)
     override = getattr(args, "db", None)
@@ -1014,6 +1150,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "backup": cmd_backup,
         "db": cmd_db,
         "calendar": cmd_calendar,
+        "registry": cmd_registry,
     }
     try:
         return handlers[args.command](args)
