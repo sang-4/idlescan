@@ -12,7 +12,7 @@ Work is ordered by priority; a package is only committed when the full suite is 
 | 05 | P0 | Quorum reads, endpoint health, secret redaction | `rpc.py`, `health.py` (new), `redaction.py` (new), `scanner.py`, `api.py`, `cli.py` | `test_quorum.py` (new) | quorum semantics with failover |
 | 06 | P1 | Migration framework, backups, newer-schema refusal, prune | `db.py`, `migrations.py` (new), `cli.py` | `test_migrations.py` (new) | data loss on v1 DBs |
 | 07 | P1 | Dataset provenance, fetch, staleness, streaming parse | `service.py`, `registry.py`, `merkle.py`, `cli.py`, `web/*`, docs | `test_provenance.py` (new) | large-file memory |
-| 08 | P1 | doctor, structured logs, health, metrics | `doctor.py` (new), `logging.py` (new), `api.py`, `cli.py` | `test_doctor.py`, `test_observability.py` | offline safety |
+| 08 | P1 | doctor, structured logs, health, metrics | `doctor.py` (new), `log.py` (new), `api.py`, `cli.py` | `test_doctor.py`, `test_observability.py` | offline safety |
 | 09 | P1 | Alert dedupe scopes, escalation, resolution, notifications | `db.py`, `service.py`, `notifications.py` (new), `cli.py`, `web/*` | `test_alerts_v2.py` (new) | retry loops, secret exposure |
 | 10 | P1 | Containers, CI, dev tooling, Makefile | `Dockerfile`, `compose.yaml`, `deploy/`, `.github/`, `pyproject.toml` | config-parse tests | unavailable toolchain |
 | 11 | P2 | Registry verification tooling and schema | `registry.py`, `verify.py`, `cli.py`, `registry.schema.json`, docs | `test_registry_tools.py` | fabrication risk (avoided) |

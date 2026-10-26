@@ -74,6 +74,16 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--json", action="store_true")
     demo.add_argument("--markdown", action="store_true")
 
+    doctor = sub.add_parser(
+        "doctor", help="check configuration, database and (optionally) RPC endpoints"
+    )
+    doctor.add_argument("--online", action="store_true", help="probe configured RPC endpoints")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--env-file", type=Path)
+    doctor.add_argument("--db", type=Path)
+    doctor.add_argument("--chains-file", type=Path)
+    doctor.add_argument("--tokens-file", type=Path)
+
     dataset = sub.add_parser(
         "dataset", help="validate a merkle claims file against a distributor contract"
     )
@@ -361,6 +371,31 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import FAIL, WARN, run_doctor
+
+    settings = _settings(args)
+    if getattr(args, "db", None):
+        settings = settings.with_overrides(db_path=args.db)
+    report = run_doctor(
+        settings,
+        online=bool(args.online),
+        chains_file=getattr(args, "chains_file", None),
+        tokens_file=getattr(args, "tokens_file", None),
+    )
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] else 1
+    print(f"idlescan {report['version']}  ·  {report['failures']} failure(s), "
+          f"{report['warnings']} warning(s)")
+    for check in report["checks"]:
+        marker = {FAIL: "FAIL", WARN: "warn", "ok": "ok  "}[check["status"]]
+        print(f"  {marker}  {check['name']:<19} {check['detail']}")
+        if check.get("hint") and check["status"] != "ok":
+            print(f"        hint: {check['hint']}")
+    return 0 if report["ok"] else 1
+
+
 def cmd_dataset(args: argparse.Namespace) -> int:
     from .abi import calldata
     from .merkle import verify_proof
@@ -574,8 +609,10 @@ def cmd_scan_saved(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     from .api import run
+    from .log import configure_logging
 
     settings = _settings(args)
+    configure_logging(settings.log_level, settings.log_format)
     settings = settings.with_overrides(
         host=args.host,
         port=args.port,
@@ -951,6 +988,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "verify": cmd_verify,
         "selftest": cmd_selftest,
         "dataset": cmd_dataset,
+        "doctor": cmd_doctor,
         "chains": cmd_chains,
         "tokens": cmd_tokens,
         "serve": cmd_serve,

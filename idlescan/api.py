@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -85,6 +86,91 @@ class RateLimiter:
                 return False, retry
             self._buckets[key] = (tokens - 1.0, now)
             return True, 0
+
+
+_ADDRESS_IN_PATH = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def metric_path(path: str) -> str:
+    """Bucket a request path for counters without unbounded cardinality.
+
+    Wallet addresses and numeric ids are replaced by placeholders.  Airdrop
+    slugs are kept (they are operator-visible already); anything beyond
+    ``max_paths`` distinct buckets is folded into ``other``.
+    """
+    if not path.startswith("/api/"):
+        return "static"
+    trimmed = _ADDRESS_IN_PATH.sub(":address", path.split("?", 1)[0])
+    trimmed = re.sub(r"/\d+(?=/|$)", "/:id", trimmed)
+    return trimmed[:120] or "/api"
+
+
+class ServerMetrics:
+    """Thread-safe request counters for ``/api/metrics`` and ``/api/health``."""
+
+    def __init__(self, max_paths: int = 40) -> None:
+        self.max_paths = max_paths
+        self._lock = threading.Lock()
+        self.started_monotonic = time.monotonic()
+        self.started_at = datetime.now(timezone.utc).replace(microsecond=0)
+        self.requests = 0
+        self.in_flight = 0
+        self.errors = 0
+        self.unauthorized = 0
+        self.rate_limited = 0
+        self.by_method: dict[str, int] = {}
+        self.by_status: dict[str, int] = {}
+        self.by_path: dict[str, int] = {}
+        self.overflow = 0
+        self.last_request_at: str | None = None
+        self.last_status: int | None = None
+
+    def begin(self) -> None:
+        with self._lock:
+            self.in_flight += 1
+
+    def record(self, method: str, path: str, status: int, duration_ms: float) -> None:
+        bucket = metric_path(path)
+        with self._lock:
+            self.in_flight = max(0, self.in_flight - 1)
+            self.requests += 1
+            self.last_status = status
+            self.last_request_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self.by_method[method] = self.by_method.get(method, 0) + 1
+            family = f"{status // 100}xx"
+            self.by_status[family] = self.by_status.get(family, 0) + 1
+            if len(self.by_path) < self.max_paths or bucket in self.by_path:
+                self.by_path[bucket] = self.by_path.get(bucket, 0) + 1
+            else:
+                self.overflow += 1
+            if status == 401:
+                self.unauthorized += 1
+            if status == 429:
+                self.rate_limited += 1
+            if status >= 500:
+                self.errors += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            uptime = max(0.0, time.monotonic() - self.started_monotonic)
+            return {
+                "uptime_seconds": round(uptime, 3),
+                "started_at": self.started_at.isoformat(),
+                "requests": {
+                    "total": self.requests,
+                    "in_flight": self.in_flight,
+                    "errors": self.errors,
+                    "unauthorized": self.unauthorized,
+                    "rate_limited": self.rate_limited,
+                    "overflowed_paths": self.overflow,
+                    "last_status": self.last_status,
+                    "last_at": self.last_request_at,
+                    "by_method": dict(sorted(self.by_method.items())),
+                    "by_status": dict(sorted(self.by_status.items())),
+                },
+                "paths": dict(sorted(self.by_path.items(), key=lambda item: -item[1])),
+            }
+
 
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
@@ -148,6 +234,7 @@ class ApiHandler(BaseHTTPRequestHandler):
     settings: Settings
     warnings: list[str]
     limiter: RateLimiter
+    metrics: ServerMetrics
 
     # ------------------------------------------------------------ plumbing
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -176,12 +263,23 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._dispatch("OPTIONS")
 
+    def send_response_only(self, code: int, message: str | None = None) -> None:
+        # Single choke point for metrics: every response, including static
+        # files and 304s, passes through here.
+        self._response_status = int(code)
+        super().send_response_only(code, message)
+
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
         self._head_only = method == "HEAD"
+        self._response_status = 0
         self.request_id = uuid.uuid4().hex[:16]
+        metrics = getattr(self.server, "metrics", None)
+        started = time.monotonic()
+        if metrics is not None:
+            metrics.begin()
         try:
             if method in ("GET", "HEAD") and not path.startswith("/api/"):
                 self._serve_static(path, head=method == "HEAD")
@@ -228,6 +326,14 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._send_json(
                 500, {"error": redact_text(f"{exc.__class__.__name__}: {exc}")}
             )
+        finally:
+            if metrics is not None:
+                metrics.record(
+                    method,
+                    path,
+                    self._response_status or 500,
+                    (time.monotonic() - started) * 1000.0,
+                )
 
     # ------------------------------------------------------------ guard rails
     def _rate_limit(self, method: str, path: str) -> None:
@@ -399,16 +505,39 @@ def _svc(handler: ApiHandler) -> PlatformService:
     return handler.service
 
 
-def health(handler, params, query, body):
+def _db_summary(service: PlatformService) -> dict:
+    status = service.db.status()
     return {
-        "status": "ok",
+        "schema_version": status["schema_version"],
+        "latest_schema_version": status["latest_schema_version"],
+        "pending_migrations": status["pending_migrations"],
+        "up_to_date": status["up_to_date"],
+        "size_bytes": status["size_bytes"],
+    }
+
+
+def health(handler, params, query, body):
+    database = _db_summary(handler.service)
+    snapshot = handler.metrics.snapshot()
+    return {
+        "status": "ok" if database["up_to_date"] else "degraded",
         "version": __version__,
+        "uptime_seconds": snapshot["uptime_seconds"],
         "read_only": handler.settings.read_only,
         "claim_handoff": handler.settings.claim_handoff,
         "local_edits": handler.settings.local_edits,
         "lockdown": handler.settings.lockdown,
+        "database": database,
+        "requests": snapshot["requests"],
         "rpc": handler.service.rpc_health(),
     }
+
+
+def metrics(handler, params, query, body):
+    payload = handler.metrics.snapshot()
+    payload["version"] = __version__
+    payload["database"] = _db_summary(handler.service)
+    return payload
 
 
 def config(handler, params, query, body):
@@ -632,6 +761,7 @@ def export(handler, params, query, body):
 def build_router() -> Router:
     router = Router()
     router.add("GET", r"/api/health", health)
+    router.add("GET", r"/api/metrics", metrics)
     router.add("GET", r"/api/config", config)
     router.add("GET", r"/api/stats", stats)
     router.add("GET", r"/api/wallets", wallets_list)
@@ -675,6 +805,7 @@ def create_server(
     warnings: list[str] | None = None,
     port: int | None = None,
 ) -> ThreadingHTTPServer:
+    request_metrics = ServerMetrics()
     handler = type(
         "BoundApiHandler",
         (ApiHandler,),
@@ -684,6 +815,7 @@ def create_server(
             "settings": settings,
             "warnings": warnings or [],
             "limiter": RateLimiter(),
+            "metrics": request_metrics,
         },
     )
     bind_port = settings.port if port is None else port
@@ -693,6 +825,7 @@ def create_server(
         raise ServiceError(f"cannot bind {settings.host}:{bind_port}: {exc}") from None
     server.daemon_threads = True
     server.service = service  # type: ignore[attr-defined]
+    server.metrics = request_metrics  # type: ignore[attr-defined]
     return server
 
 
@@ -707,6 +840,10 @@ def _refresh_loop(service: PlatformService, minutes: int, stop: threading.Event)
 
 
 def run(settings: Settings, *, service: PlatformService | None = None) -> int:
+    from .log import configure_logging, get_logger
+
+    configure_logging(settings.log_level, settings.log_format)
+    logger = get_logger("idlescan.api")
     warnings = settings.validate()
     service = service or PlatformService(settings)
     if settings.demo:
@@ -724,6 +861,8 @@ def run(settings: Settings, *, service: PlatformService | None = None) -> int:
         print(f"env:  {settings.env_file}")
     for warning in warnings:
         print(f"warning: {warning}")
+    print(f"log:  {settings.log_level} {settings.log_format}")
+    logger.info("listening on http://%s:%s (read_only=%s)", url_host, port, settings.read_only)
     print("press ctrl-c to stop")
 
     stop = threading.Event()

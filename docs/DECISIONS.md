@@ -85,3 +85,19 @@ the database is not migrated and the process fails with an actionable message.
 passed, the newest snapshot is always kept, and open alerts are never deleted.
 `0` disables pruning for that category. Backups written to a directory are
 rotated to the newest `IDLESCAN_BACKUP_KEEP` (default 5) files.
+
+## D-014 — Process log module name and metrics scope
+
+The logging helper is `idlescan/log.py`, not `logging.py`, so it can never
+shadow the standard library. Process logs are optional and redacted; durable
+audit records stay in SQLite. Request metrics are in-process counters exposed at
+`GET /api/metrics` (behind the same bearer auth as every other `/api/*` route).
+Paths are bucketed and capped so a hostile client cannot grow memory through
+unique URLs; wallet addresses never appear in metric keys. `/api/health` reports
+`status: degraded` when the database schema is not current but remains a
+read-only probe (it never migrates).
+
+`idlescan doctor` exits non-zero only for failures (invalid configuration,
+unreadable chains/tokens, newer schema, corrupt data, unreachable RPC in
+`--online` mode). A pending migration is a warning: it is actionable, not
+corruption.
