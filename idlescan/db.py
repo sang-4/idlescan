@@ -240,12 +240,12 @@ class Database:
                     "INSERT INTO claims(snapshot_id, drop_id, name, chain, wallet, distributor, status, "
                     "expired, deadline, amount_raw, decimals, token, usd_price, usd_value, gas_native, gas_usd, "
                     "net_usd, proof_verified, eligibility_source, note, calldata, "
-                    "gas_units, fee_per_gas, l1_fee_wei, gas_cost_native_raw, gas_cost_usd_raw, "
+                    "gas_units, fee_per_gas, max_fee_per_gas, max_priority_fee_per_gas, l1_fee_wei, gas_cost_native_raw, gas_cost_usd_raw, "
                     "gas_cost_native_buffered, gas_cost_usd_buffered, "
                     "gas_estimate_quality, gas_note, gas_limit, fee_source, fee_model, root, "
                     "price_source, price_asof, price_confidence) "
                     "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-                    "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         snapshot_id,
                         claim["drop_id"],
@@ -270,6 +270,8 @@ class Database:
                         claim.get("claim_calldata"),
                         claim.get("gas_units"),
                         claim.get("fee_per_gas"),
+                        claim.get("max_fee_per_gas"),
+                        claim.get("max_priority_fee_per_gas"),
                         claim.get("l1_fee_wei"),
                         claim.get("gas_cost_native_raw", claim.get("gas_native")),
                         claim.get("gas_cost_usd_raw", claim.get("gas_usd")),

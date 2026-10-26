@@ -602,6 +602,7 @@ class Scanner:
                 source=dataset.source,
                 proof_verified=proof_ok,
                 note=note,
+                root=root.hex() if root else None,
             )
             if status == UNCLAIMED:
                 row.calldata = self._claim_calldata(drop, wallet, claim)
@@ -684,6 +685,7 @@ class Scanner:
                 drop, chain, wallet, status,
                 amount_raw=claim.amount, symbol=self._symbols.get(drop.id, drop.name), source=url, proof_verified=proof_ok,
                 note=None if claimed is not None else "claim state unavailable from RPC",
+                root=root.hex() if root else None,
             )
             if status == UNCLAIMED:
                 row.calldata = self._claim_calldata(drop, wallet, claim)

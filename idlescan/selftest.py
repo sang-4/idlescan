@@ -29,6 +29,7 @@ DISTRIBUTOR = "0xdddddddddddddddddddddddddddddddddddddddd"
 
 SEL_IS_CLAIMED = selector("isClaimed(uint256)")
 SEL_MERKLE_ROOT = selector("merkleRoot()")
+SEL_CLAIM = selector("claim(uint256,address,uint256,bytes32[])")
 SEL_BALANCE_OF = selector("balanceOf(address)")
 SEL_DECIMALS = selector("decimals()")
 SEL_SYMBOL = selector("symbol()")
@@ -145,6 +146,11 @@ class MockRpc:
             if sel == SEL_IS_CLAIMED:
                 index = int.from_bytes(args[:32], "big")
                 return "0x" + encode(["bool"], [index in self.world.claimed_indexes]).hex()
+            if sel == SEL_CLAIM:
+                index = int.from_bytes(args[:32], "big")
+                if index in self.world.claimed_indexes:
+                    raise RpcError("execution reverted: already claimed")
+                return "0x" + encode(["bool"], [True]).hex()
             raise RpcError("execution reverted")
 
         if to == TOKEN:

@@ -15,6 +15,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -23,6 +24,7 @@ from .cache import Cache
 from .chains import ChainConfig, Token, load_chains, load_tokens
 from .config import PROJECT_ROOT, Settings
 from .db import Database
+from .preflight import PreflightError, run_preflight
 from .prices import PriceOracle
 from .registry import Airdrop, ConfigError, load_registry, parse_registry
 from .report import render_markdown, to_dict
@@ -114,7 +116,9 @@ class PlatformService:
         rows = self.db.list_airdrops(enabled_only=True)
         payload = {"airdrops": [row["payload"] for row in rows]}
         try:
-            return parse_registry(payload, self.chains)
+            # Claim preparation works from a snapshot; the dataset file is only
+            # needed to *discover* positions, not to hand off one that exists.
+            return parse_registry(payload, self.chains, require_dataset=False)
         except ConfigError:
             return []
 
@@ -420,6 +424,12 @@ class PlatformService:
 
     # ------------------------------------------------------- claim execution
     def prepare_claim(self, drop_id: str, wallet: str) -> dict:
+        """Prepare an unsigned claim only after a fresh, fail-closed preflight.
+
+        Every check below runs against the chain now, not against the snapshot.
+        A failure is recorded in executions/audit and returned as an error; no
+        partial transaction is ever handed out.
+        """
         self._require_write_mode("prepare claim transaction")
         snapshot = self.db.latest_snapshot()
         if not snapshot:
@@ -429,39 +439,73 @@ class PlatformService:
             raise NotFound("no claim position for that wallet/drop in the latest snapshot")
         if row["status"] != UNCLAIMED:
             raise Conflict(f"position is {row['status']}, not claimable")
-        if row["expired"]:
-            raise Conflict("claim window has expired")
+
+        drop = next((item for item in self.registry_drops() if item.id == drop_id), None)
+        if drop is None:
+            raise NotFound(f"airdrop {drop_id} is not in the registry")
+        chain = self.chains.get(row["chain"])
+
+        deadline = _parse_deadline(drop.claim_deadline)
+        if deadline is not None and deadline <= datetime.now(timezone.utc):
+            self._record_preflight_failure(row, "claim window expired before preparation")
+            raise Conflict("claim window has expired (checked again at preparation time)")
         if not row["calldata"]:
+            self._record_preflight_failure(row, "no calldata in the snapshot")
             raise Conflict("no calldata available for this position")
 
-        chain_id = None
-        for chain in self.chains.chains.values():
-            if chain.key == row["chain"]:
-                chain_id = chain.chain_id
-                break
+        rpc = self._chain_rpc(chain)
+        try:
+            evidence = run_preflight(rpc, drop, row)
+        except PreflightError as exc:
+            self._record_preflight_failure(row, str(exc))
+            error_class = Conflict if exc.status == 409 else ServiceError
+            if exc.status == 503:
+                error_class = ServiceError
+            raise error_class(str(exc)) from None
+
+        gas_limit = row.get("gas_limit")
         tx = {
-            "chainId": hex(chain_id) if chain_id else None,
+            "chainId": hex(chain.chain_id),
             "from": row["wallet"],
             "to": row["distributor"],
             "value": "0x0",
             "data": row["calldata"],
         }
-        if row.get("gas_limit"):
-            tx["gasLimit"] = hex(int(row["gas_limit"]))
+        if gas_limit:
+            tx["gasLimit"] = hex(int(gas_limit))
         if row.get("fee_model") == "eip1559" and row.get("max_fee_per_gas"):
             tx["maxFeePerGas"] = hex(int(row["max_fee_per_gas"]))
             tx["maxPriorityFeePerGas"] = hex(int(row["max_priority_fee_per_gas"] or 0))
         elif row.get("fee_per_gas"):
             tx["gasPrice"] = hex(int(row["fee_per_gas"]))
+        assert tx["value"] == "0x0", "claim value must always be zero"
+
+        call = evidence["call"]
+        amount_display = Decimal(int(row["amount_raw"])) / (Decimal(10) ** int(row["decimals"]))
+        prepared_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        summary = [
+            f"Network: {chain.name} (chain id {chain.chain_id}).",
+            f"Contract: {drop.name} distributor {drop.distributor}.",
+            f"Function: {call['function']}.",
+            f"Index: {call['index']}; account: {call['account']}; amount: {amount_display} "
+            f"({row['amount_raw']} base units).",
+            f"Proof: {len(call['proof'])} sibling hashes, re-verified against the on-chain root.",
+            "Value: 0 - this claim never asks you to send ETH or a token.",
+            "The server does not sign or broadcast; your wallet will.",
+        ]
         self.db.add_execution(
             wallet=row["wallet"],
             drop_id=drop_id,
             chain=row["chain"],
             tx_hash=None,
             status="prepared",
-            detail="unsigned transaction returned to wallet",
+            detail=f"preflight ok at block {evidence.get('block_number')}",
         )
-        self.db.log("api", "claim.prepare", f"{drop_id}/{row['wallet']}")
+        self.db.log(
+            "api",
+            "claim.prepare",
+            f"{drop_id}/{row['wallet']} preflight ok at block {evidence.get('block_number')}",
+        )
         return {
             "transaction": tx,
             "claim": {
@@ -478,12 +522,45 @@ class PlatformService:
                 "net_usd": row["net_usd"],
                 "distributor": row["distributor"],
             },
+            "preflight": {
+                "checked_at": prepared_at,
+                "block_number": evidence.get("block_number"),
+                "call": call,
+                "root": evidence.get("root"),
+                "distributor": row["distributor"],
+                "explorer_url": (
+                    f"{chain.explorer}/address/{row['distributor']}" if chain.explorer else None
+                ),
+                "payable": evidence.get("payable"),
+                "provenance": evidence.get("provenance"),
+            },
+            "what_you_are_about_to_sign": summary,
             "warnings": [
                 "Check the destination address against the project's official docs before signing.",
                 "A legitimate claim never needs a token approval or an off-chain signature.",
                 "This server does not broadcast; your wallet does.",
             ],
         }
+
+    def _chain_rpc(self, chain) -> Rpc:
+        if self.rpc_factory:
+            return self.rpc_factory(chain)
+        return Rpc(list(chain.rpcs))
+
+    def _record_preflight_failure(self, row: dict, detail: str) -> None:
+        self.db.add_execution(
+            wallet=row["wallet"],
+            drop_id=row["drop_id"],
+            chain=row["chain"],
+            tx_hash=None,
+            status="preflight_failed",
+            detail=detail[:500],
+        )
+        self.db.log(
+            "api",
+            "claim.preflight_failed",
+            f"{row['drop_id']}/{row['wallet']}: {detail[:300]}",
+        )
 
     def confirm_claim(self, *, drop_id: str, wallet: str, tx_hash: str) -> dict:
         self._require_write_mode("record a claim transaction")

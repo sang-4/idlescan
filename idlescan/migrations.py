@@ -169,6 +169,8 @@ class Migration:
 _CLAIM_GAS_COLUMNS = {
     "gas_units": "INTEGER",
     "fee_per_gas": "INTEGER",
+    "max_fee_per_gas": "INTEGER",
+    "max_priority_fee_per_gas": "INTEGER",
     "l1_fee_wei": "INTEGER",
     "gas_cost_native_raw": "REAL",
     "gas_cost_usd_raw": "REAL",

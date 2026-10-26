@@ -60,6 +60,15 @@ class Airdrop:
     links: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
     verified_on: str | None = None
+    # WP-02: payable claims are refused unless the entry explicitly opts in.
+    claim_payable: bool = False
+    allow_payable: bool = False
+    # WP-07 provenance, surfaced in profiles and exports.
+    official_source_url: str | None = None
+    announcement_url: str | None = None
+    contract_source_url: str | None = None
+    verified_at: str | None = None
+    verified_by: str | None = None
 
     @property
     def label(self) -> str:
@@ -73,7 +82,7 @@ def _require_address(value: Any, field_name: str) -> str:
         raise ConfigError(f"{field_name}: {exc}") from None
 
 
-def _parse_eligibility(raw: dict[str, Any], where: str) -> Eligibility:
+def _parse_eligibility(raw: dict[str, Any], where: str, *, require_dataset: bool = True) -> Eligibility:
     kind = str(raw.get("type", "")).strip()
     if kind not in ELIGIBILITY_TYPES:
         raise ConfigError(
@@ -93,7 +102,7 @@ def _parse_eligibility(raw: dict[str, Any], where: str) -> Eligibility:
         double_hash=bool(raw.get("double_hash", False)),
         sort_pairs=bool(raw.get("sort_pairs", True)),
     )
-    if kind == "merkle_dataset" and not eligibility.dataset:
+    if require_dataset and kind == "merkle_dataset" and not eligibility.dataset:
         raise ConfigError(f"{where}: merkle_dataset requires 'dataset'")
     if kind == "dataset_url" and not (eligibility.url and "{address}" in eligibility.url):
         raise ConfigError(
@@ -102,7 +111,9 @@ def _parse_eligibility(raw: dict[str, Any], where: str) -> Eligibility:
     return eligibility
 
 
-def parse_registry(data: dict[str, Any], chains: ChainConfig) -> list[Airdrop]:
+def parse_registry(
+    data: dict[str, Any], chains: ChainConfig, *, require_dataset: bool = True
+) -> list[Airdrop]:
     drops: list[Airdrop] = []
     seen: set[str] = set()
     for index, raw in enumerate(data.get("airdrops") or []):
@@ -129,9 +140,18 @@ def parse_registry(data: dict[str, Any], chains: ChainConfig) -> list[Airdrop]:
                 links=dict(raw.get("links") or {}),
                 enabled=bool(raw.get("enabled", True)),
                 verified_on=raw.get("verified_on"),
+                claim_payable=bool(raw.get("claim_payable", False)),
+                allow_payable=bool(raw.get("allow_payable", False)),
+                official_source_url=raw.get("official_source_url"),
+                announcement_url=raw.get("announcement_url"),
+                contract_source_url=raw.get("contract_source_url"),
+                verified_at=raw.get("verified_at"),
+                verified_by=raw.get("verified_by"),
             )
             if raw.get("eligibility"):
-                drop.eligibility = _parse_eligibility(raw["eligibility"], where)
+                drop.eligibility = _parse_eligibility(
+                    raw["eligibility"], where, require_dataset=require_dataset
+                )
                 if drop.eligibility.is_merkle:
                     drop.claimed_method = str(raw.get("claimed_method") or "isClaimed(uint256)")
                     drop.claimed_arg = "index"
