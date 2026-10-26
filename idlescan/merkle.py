@@ -36,13 +36,19 @@ def parse_amount(value: Any) -> int:
     if text.lower().startswith("0x"):
         return int(text, 16)
     if "." in text or "e" in text.lower():
-        from decimal import Decimal
+        from decimal import Decimal, InvalidOperation
 
-        number = Decimal(text)
+        try:
+            number = Decimal(text)
+        except InvalidOperation:
+            raise ValueError(f"non-integer amount {value!r}") from None
         if number != number.to_integral_value():
             raise ValueError(f"non-integer amount {value!r}")
         return int(number)
-    return int(text)
+    try:
+        return int(text)
+    except ValueError:
+        raise ValueError(f"non-integer amount {value!r}") from None
 
 
 def leaf_hash(
@@ -166,18 +172,33 @@ class Claim:
 class ClaimDataset:
     """A claim set keyed by address, optionally with its published root."""
 
-    claims: dict[str, Claim]
+    claims: Mapping[str, Claim]
     root: bytes | None = None
     source: str | None = None
     encoding: str = "abi"
     double_hash: bool = False
     sort_pairs: bool = True
+    provenance: dict[str, Any] | None = None
+
+    @classmethod
+    def from_mapping(
+        cls, data: Mapping[str, Any], *, source: str | None = None
+    ) -> "ClaimDataset":
+        return parse_dataset(data, source=source)
 
     def get(self, address: str) -> Claim | None:
         return self.claims.get(normalise_address(address))
 
+    def items(self) -> Iterable[tuple[str, Claim]]:
+        return self.claims.items()
+
     def __len__(self) -> int:
         return len(self.claims)
+
+    def close(self) -> None:
+        close = getattr(self.claims, "close", None)
+        if callable(close):
+            close()
 
     def computed_root(self) -> bytes:
         leaves = [

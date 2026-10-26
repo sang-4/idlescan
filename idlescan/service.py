@@ -232,6 +232,7 @@ class PlatformService:
                 trigger=request.trigger,
             )
             alerts = self._generate_alerts(snapshot_id, payload)
+            self._persist_datasets(payload)
             self.db.update_job(
                 job_id,
                 status="done",
@@ -272,6 +273,7 @@ class PlatformService:
             rpc_factory=self.rpc_factory or (lambda chain: self._new_rpc(chain)),
             verbose=progress,
             gas_buffer_pct=self.settings.gas_buffer_pct,
+            dataset_stale_days=self.settings.dataset_stale_days,
             http_fetch=lambda url: safe_fetch_json(
                 url,
                 allow_http=self.settings.allow_http_fetch,
@@ -304,6 +306,7 @@ class PlatformService:
             trigger=trigger,
         )
         self._generate_alerts(snapshot_id, payload)
+        self._persist_datasets(payload)
         return snapshot_id, payload
 
     def job(self, job_id: str) -> dict:
@@ -591,6 +594,13 @@ class PlatformService:
     def rpc_health(self) -> list[dict]:
         return self.endpoint_health.snapshot()
 
+    def _persist_datasets(self, payload: dict) -> None:
+        for record in payload.get("datasets", []) or []:
+            try:
+                self.db.upsert_dataset_provenance(record)
+            except (KeyError, sqlite3.Error):
+                continue
+
     def _record_preflight_failure(self, row: dict, detail: str) -> None:
         self.db.add_execution(
             wallet=row["wallet"],
@@ -850,6 +860,7 @@ class PlatformService:
             **summary,
             "contract": contract,
             "eligibility": eligibility,
+            "dataset_provenance": self.db.dataset_provenance(drop_id),
             "verified_on": payload.get("verified_on"),
             "notes": payload.get("notes"),
             "positions": positions,

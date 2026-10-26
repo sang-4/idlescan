@@ -9,7 +9,6 @@ Read-only by construction - the only RPC methods used are ``eth_chainId``,
 from __future__ import annotations
 
 import datetime as dt
-import json
 import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +18,13 @@ from typing import Any, Callable, Sequence
 from .abi import AbiError, calldata, decode_one, normalise_address
 from .cache import Cache
 from .chains import Chain, ChainConfig, Token
+from .dataset import (
+    MAX_DATASET_BYTES,
+    DatasetError,
+    dataset_provenance,
+    is_stale,
+    parse_dataset_file,
+)
 from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
 from .prices import PriceOracle, provider_id_for
@@ -181,6 +187,7 @@ class ScanReport:
         default_factory=lambda: dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     )
     price_error: str | None = None
+    datasets: list[dict] = field(default_factory=list)
 
     @property
     def claim_value(self) -> float | None:
@@ -217,6 +224,8 @@ class Scanner:
         verbose: Callable[[str], None] | None = None,
         http_fetch: Callable[[str], dict] | None = None,
         gas_buffer_pct: int = 20,
+        dataset_stale_days: int = 30,
+        max_dataset_bytes: int = MAX_DATASET_BYTES,
     ):
         self.chains = chains
         self.tokens = tokens
@@ -229,8 +238,11 @@ class Scanner:
         self.verbose = verbose or (lambda message: None)
         self.http_fetch = http_fetch or _fetch_json
         self.gas_buffer_pct = gas_buffer_pct
+        self.dataset_stale_days = dataset_stale_days
+        self.max_dataset_bytes = max_dataset_bytes
         self._rpcs: dict[str, Rpc] = {}
         self._datasets: dict[str, ClaimDataset | None] = {}
+        self._provenance: dict[str, dict] = {}
         self._leaf_modes: dict[str, tuple[str, bool] | None] = {}
         self._symbols: dict[str, str] = {}
 
@@ -291,6 +303,9 @@ class Scanner:
         self._apply_prices(report)
         report.price_error = self.prices.error
         self.cache.flush()
+        for dataset in self._datasets.values():
+            if dataset is not None:
+                dataset.close()
         return report
 
     # -------------------------------------------------------------- balances
@@ -494,20 +509,37 @@ class Scanner:
         eligibility = drop.eligibility
         assert eligibility is not None
         if eligibility.type == "merkle_dataset":
-            path = eligibility.dataset or ""
+            path = Path(eligibility.dataset or "")
             try:
-                payload = json.loads(Path(path).read_text())
-                dataset = parse_dataset(payload, source=path)
-                self.verbose(f"  {drop.name}: loaded {len(dataset)} claims from {path}")
+                dataset = parse_dataset_file(
+                    path, drop_id=drop.id, max_bytes=self.max_dataset_bytes
+                )
+                provenance = dataset_provenance(
+                    path,
+                    drop_id=drop.id,
+                    root=dataset.root,
+                    entry_count=len(dataset),
+                )
+                dataset.provenance = provenance.as_dict()
+                self._provenance[drop.id] = dataset.provenance
+                report.datasets.append(dataset.provenance)
+                if is_stale(provenance, self.dataset_stale_days):
+                    age = provenance.fetched_at[:10]
+                    report.warnings.append(
+                        f"{drop.name}: claims dataset is older than "
+                        f"{self.dataset_stale_days} days (file dated {age}); verify it is "
+                        "still the published distribution before trusting the result"
+                    )
+                self.verbose(f"  {drop.name}: loaded {len(dataset)} claims from {path.name}")
             except FileNotFoundError:
                 report.warnings.append(
-                    f"{drop.name}: claims dataset not found ({Path(path).name}) - drop cannot be checked "
+                    f"{drop.name}: claims dataset not found ({path.name}) - drop cannot be checked "
                     f"(add the published distribution file to the dataset directory)"
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, DatasetError, ValueError) as exc:
                 report.warnings.append(
-                    f"{drop.name}: claims dataset {Path(path).name} could not be read "
-                    f"({exc.__class__.__name__})"
+                    f"{drop.name}: claims dataset {path.name} could not be read "
+                    f"({exc.__class__.__name__}: {str(exc)[:160]})"
                 )
         self._datasets[drop.id] = dataset
         return dataset
@@ -548,6 +580,12 @@ class Scanner:
                     )
                 )
             return
+
+        if dataset.provenance is not None:
+            dataset.provenance["root_verified"] = bool(root and dataset.root and dataset.root == root)
+            dataset.provenance["block_number"] = report.block_numbers.get(chain.key)
+            if root:
+                dataset.provenance["root"] = "0x" + root.hex()
 
         if root and dataset.root and dataset.root != root:
             for wallet in wallets:

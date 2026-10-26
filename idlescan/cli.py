@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Sequence
 
 from .abi import normalise_address
+from . import __version__
 from .cache import Cache
 from .db import Database
+from .dataset import DatasetError, dataset_provenance, parse_dataset_file
 from .chains import ConfigError, load_chains, load_tokens
 from .prices import PriceOracle
 from .registry import load_registry
@@ -361,21 +363,23 @@ def cmd_selftest(args: argparse.Namespace) -> int:
 
 def cmd_dataset(args: argparse.Namespace) -> int:
     from .abi import calldata
-    from .merkle import parse_dataset, verify_proof
+    from .merkle import verify_proof
     from .verify import detect_proof_mode
 
     chains = load_chains(args.chains_file)
     chain = chains.get(args.chain)
     try:
-        payload = json.loads(args.path.read_text())
-    except OSError as exc:
+        dataset = parse_dataset_file(args.path)
+    except (OSError, DatasetError) as exc:
         print(f"cannot read {args.path}: {exc}", file=sys.stderr)
         return 2
-    except json.JSONDecodeError as exc:
-        print(f"{args.path} is not valid JSON: {exc}", file=sys.stderr)
-        return 2
-
-    dataset = parse_dataset(payload, source=str(args.path))
+    provenance = dataset_provenance(
+        args.path,
+        drop_id="",
+        root=dataset.root,
+        entry_count=len(dataset),
+        tool_version=__version__,
+    )
     root: bytes | None = None
     root_source = "argument"
     if args.root:
@@ -436,9 +440,11 @@ def cmd_dataset(args: argparse.Namespace) -> int:
             "proofs_verified": verified,
             "proofs_failed": failed,
             "checks": [{"ok": ok, "detail": detail} for ok, detail in checks],
+            "provenance": provenance.as_dict(),
         }, indent=2))
     else:
         print(f"{args.path}: {len(dataset)} claims")
+        print(f"sha256: {provenance.sha256}  ({provenance.byte_size:,} bytes)")
         if root:
             print(f"root ({root_source}): 0x{root.hex()}")
         for ok, detail in checks:

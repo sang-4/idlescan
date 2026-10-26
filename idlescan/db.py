@@ -569,6 +569,45 @@ class Database:
         return result
 
 
+    # ------------------------------------------------------------- provenance
+    def upsert_dataset_provenance(self, record: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO dataset_provenance(drop_id, filename, source_url, fetched_at, "
+                "sha256, byte_size, root_verified, root, block_number, entry_count, tool_version) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(drop_id) DO UPDATE SET filename=excluded.filename, "
+                "source_url=excluded.source_url, fetched_at=excluded.fetched_at, "
+                "sha256=excluded.sha256, byte_size=excluded.byte_size, "
+                "root_verified=excluded.root_verified, root=excluded.root, "
+                "block_number=excluded.block_number, entry_count=excluded.entry_count, "
+                "tool_version=excluded.tool_version",
+                (
+                    record["drop_id"],
+                    record["filename"],
+                    record.get("source_url"),
+                    record["fetched_at"],
+                    record["sha256"],
+                    int(record.get("byte_size", 0)),
+                    1 if record.get("root_verified") else 0,
+                    record.get("root"),
+                    record.get("block_number"),
+                    int(record.get("entry_count", 0)),
+                    record.get("tool_version", ""),
+                ),
+            )
+
+    def dataset_provenance(self, drop_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM dataset_provenance WHERE drop_id = ?", (drop_id,)
+            ).fetchone()
+        if not row:
+            return None
+        payload = dict(row)
+        payload["root_verified"] = bool(payload["root_verified"])
+        return payload
+
     # ------------------------------------------------------------- db admin
     def table_counts(self) -> dict[str, int]:
         """Row counts for the tables an operator cares about."""

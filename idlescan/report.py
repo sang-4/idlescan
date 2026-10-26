@@ -232,6 +232,7 @@ def to_dict(report: ScanReport) -> dict:
         ],
         "warnings": report.warnings,
         "price_error": report.price_error,
+        "datasets": report.datasets,
     }
 
 
