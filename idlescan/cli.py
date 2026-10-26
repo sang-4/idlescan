@@ -171,9 +171,14 @@ def build_parser() -> argparse.ArgumentParser:
     claim_confirm.add_argument("--db", type=Path)
 
     alerts = sub.add_parser("alerts", help="review alerts from the local database")
-    alerts.add_argument("--all", action="store_true", help="include acknowledged alerts")
+    alerts.add_argument(
+        "--all", action="store_true", help="include acknowledged and resolved alerts"
+    )
     alerts.add_argument("--ack", type=int, metavar="ID", help="acknowledge one alert")
     alerts.add_argument("--ack-all", action="store_true", help="acknowledge every open alert")
+    alerts.add_argument("--resolve", type=int, metavar="ID", help="resolve one alert condition")
+    alerts.add_argument("--reopen", type=int, metavar="ID", help="reopen a resolved alert")
+    alerts.add_argument("--reason", default="resolved by operator", help="reason for --resolve")
     alerts.add_argument("--json", action="store_true")
     alerts.add_argument("--env-file", type=Path)
     alerts.add_argument("--db", type=Path)
@@ -803,6 +808,23 @@ def cmd_alerts(args: argparse.Namespace) -> int:
             print(f"error: alert {args.ack} not found", file=sys.stderr)
             return 1
         print(f"acknowledged alert {args.ack}")
+        return 0
+    if args.resolve is not None:
+        if not service.resolve_alert(args.resolve, args.reason):
+            print(f"error: alert {args.resolve} not found or already resolved", file=sys.stderr)
+            return 1
+        print(f"resolved alert {args.resolve}")
+        return 0
+    if args.reopen is not None:
+        try:
+            reopened = service.reopen_alert(args.reopen)
+        except ServiceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not reopened:
+            print(f"error: alert {args.reopen} not found or not resolved", file=sys.stderr)
+            return 1
+        print(f"reopened alert {args.reopen}")
         return 0
     alerts = service.alerts(include_ack=args.all)
     if args.json:

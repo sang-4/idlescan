@@ -486,20 +486,36 @@ class Database:
         snapshot_id: int | None = None,
         dedupe_key: str | None = None,
         tier: str | None = None,
-    ) -> None:
+    ) -> int | None:
+        """Insert a new alert, or return ``None`` if the condition is already open."""
         key = dedupe_key or self.alert_key(kind, title, wallet=wallet, drop_id=drop_id, tier=tier)
         with self.connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id, dedupe_key, tier) "
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (now(), kind, severity, redact_text(title), redact_text(body), wallet, drop_id, snapshot_id, key, tier),
             )
+        return int(cursor.lastrowid) if cursor.rowcount else None
 
-    def list_alerts(self, *, include_ack: bool = False, limit: int = 100) -> list[dict]:
+    def list_alerts(
+        self,
+        *,
+        include_ack: bool = False,
+        include_resolved: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
         query = "SELECT * FROM alerts"
+        clauses: list[str] = []
         if not include_ack:
-            query += " WHERE acknowledged = 0"
-        query += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id DESC LIMIT ?"
+            clauses.append("acknowledged = 0")
+        if not include_resolved:
+            clauses.append("resolved_at IS NULL")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += (
+            " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,"
+            " id DESC LIMIT ?"
+        )
         with self.connect() as connection:
             return [dict(row) for row in connection.execute(query, (limit,))]
 
@@ -512,6 +528,102 @@ class Database:
         with self.connect() as connection:
             cursor = connection.execute("UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0")
         return cursor.rowcount
+
+    def resolve_alert(self, alert_id: int, reason: str = "resolved by operator") -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE alerts SET resolved_at = ?, resolved_reason = ? "
+                "WHERE id = ? AND resolved_at IS NULL",
+                (now(), redact_text(reason), alert_id),
+            )
+        return cursor.rowcount > 0
+
+    def reopen_alert(self, alert_id: int) -> bool:
+        """Re-open a resolved alert.
+
+        Raises ``sqlite3.IntegrityError`` when another open alert already holds
+        the same dedupe key (the partial unique index protects the user from
+        duplicate signals).
+        """
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE alerts SET resolved_at = NULL, resolved_reason = NULL, "
+                "acknowledged = 0 WHERE id = ? AND resolved_at IS NOT NULL",
+                (alert_id,),
+            )
+        return cursor.rowcount > 0
+
+    def resolve_stale_alerts(
+        self,
+        active_keys: set[str],
+        *,
+        kinds: Sequence[str],
+        drop_ids: Sequence[str],
+        reason: str = "condition cleared",
+    ) -> int:
+        """Resolve open condition alerts whose condition no longer holds.
+
+        Event-style alerts are not passed in ``kinds`` and are therefore never
+        swept away by a scan.  Rows are kept for history; only their state
+        changes.
+        """
+        allowed = [kind for kind in kinds if kind]
+        scoped = [drop for drop in drop_ids if drop]
+        if not allowed or not scoped:
+            return 0
+        kind_marks = ",".join("?" for _ in allowed)
+        drop_marks = ",".join("?" for _ in scoped)
+        # Only conditions for drops evaluated by this scan are swept: a scan of
+        # one chain must not silently resolve another chain's deadline alerts.
+        query = (
+            f"UPDATE alerts SET resolved_at = ?, resolved_reason = ? "
+            f"WHERE resolved_at IS NULL AND kind IN ({kind_marks}) "
+            f"AND drop_id IN ({drop_marks})"
+        )
+        parameters: list[Any] = [now(), redact_text(reason), *allowed, *scoped]
+        if active_keys:
+            query += " AND (dedupe_key IS NULL OR dedupe_key NOT IN (" + ",".join("?" for _ in active_keys) + "))"
+            parameters.extend(sorted(active_keys))
+        with self.connect() as connection:
+            cursor = connection.execute(query, parameters)
+        return int(cursor.rowcount)
+
+    # ----------------------------------------------------------- notifications
+    def add_notification(
+        self, *, alert_id: int | None, kind: str, url_redacted: str
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO notifications(created_at, alert_id, kind, url_redacted, status, attempts) "
+                "VALUES(?, ?, ?, ?, 'pending', 0)",
+                (now(), alert_id, kind, url_redacted),
+            )
+        return int(cursor.lastrowid)
+
+    def update_notification(
+        self,
+        notification_id: int,
+        *,
+        status: str,
+        attempts: int,
+        error: str | None = None,
+        dead_letter: bool = False,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notifications SET status = ?, attempts = ?, error = ?, dead_letter = ? "
+                "WHERE id = ?",
+                (status, attempts, redact_text(error) if error else None, 1 if dead_letter else 0, notification_id),
+            )
+
+    def list_notifications(self, limit: int = 50) -> list[dict]:
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,)
+                )
+            ]
 
     # ------------------------------------------------------------ executions
     def add_execution(self, *, wallet: str, drop_id: str, chain: str, tx_hash: str | None, status: str, detail: str = "") -> int:

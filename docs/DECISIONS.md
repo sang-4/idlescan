@@ -101,3 +101,24 @@ read-only probe (it never migrates).
 unreadable chains/tokens, newer schema, corrupt data, unreachable RPC in
 `--online` mode). A pending migration is a warning: it is actionable, not
 corruption.
+
+## D-015 — Alert conditions, escalation and resolution
+
+Alert identity is `kind|wallet|drop|title[|tier]`, enforced by a partial unique
+index over open rows. Deadlines carry an explicit tier (`14d`, `3d`), so a
+condition escalates once when it becomes urgent; the older tier is resolved by
+the same scan instead of leaving two open reminders.
+
+After every scan, **condition** alerts (below gas, deadline, invalid proof,
+claim error, missing dataset, missing eligibility) that are no longer true are
+marked resolved for the drops evaluated by that scan. Event alerts (new
+allocation, claim confirmed) are never swept: they describe something that
+happened and stay until acknowledged or pruned. Resolution keeps the row for
+history; `idlescan alerts --all` shows it.
+
+Webhook notifications are opt-in via `IDLESCAN_NOTIFY_WEBHOOK_URLS`. Delivery
+is fire-and-forget in a daemon thread (D-011), retried at most three times with
+capped backoff, recorded per URL with a redacted URL and error, and never
+allowed to fail a scan. `IDLESCAN_NOTIFY_DIGEST=true` sends one request per
+scan instead of one per alert. Outbound webhook requests use the same SSRF
+guard as dataset fetches.

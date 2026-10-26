@@ -735,8 +735,25 @@ def alerts_ack_all(handler, params, query, body):
     return {"acknowledged": _svc(handler).ack_all_alerts()}
 
 
+def alert_resolve(handler, params, query, body):
+    reason = str(body.get("reason") or "resolved by operator")
+    if not _svc(handler).resolve_alert(int(params["alert_id"]), reason):
+        raise NotFound("alert not found or already resolved")
+    return {"resolved": True}
+
+
+def alert_reopen(handler, params, query, body):
+    if not _svc(handler).reopen_alert(int(params["alert_id"])):
+        raise NotFound("alert not found or not resolved")
+    return {"reopened": True}
+
+
 def audit(handler, params, query, body):
-    return {"audit": _svc(handler).audit(), "executions": _svc(handler).executions()}
+    return {
+        "audit": _svc(handler).audit(),
+        "executions": _svc(handler).executions(),
+        "notifications": _svc(handler).notifications(),
+    }
 
 
 def claim_prepare(handler, params, query, body):
@@ -788,6 +805,8 @@ def build_router() -> Router:
     router.add("GET", r"/api/snapshots/(?P<snapshot_id>\d+)", snapshot_get)
     router.add("GET", r"/api/alerts", alerts_list)
     router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/ack", alert_ack)
+    router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/resolve", alert_resolve)
+    router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/reopen", alert_reopen)
     router.add("POST", r"/api/alerts/ack-all", alerts_ack_all)
     router.add("GET", r"/api/audit", audit)
     router.add("POST", r"/api/claims/(?P<drop_id>[\w.\-]+)/(?P<wallet>0x[0-9a-fA-F]{40})/prepare", claim_prepare)

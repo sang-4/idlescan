@@ -24,6 +24,7 @@ from .cache import Cache
 from .chains import ChainConfig, Token, load_chains, load_tokens
 from .config import PROJECT_ROOT, Settings
 from .db import Database
+from .notifications import Notifier
 from .preflight import PreflightError, run_preflight
 from .prices import PriceOracle
 from .redaction import redact_text
@@ -34,6 +35,16 @@ from .rpc import EndpointHealth, Rpc
 from .scanner import CLAIMED, ERROR, NO_ALLOCATION, UNCLAIMED, Scanner, ScanReport
 
 TX_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
+# Alerts that describe a condition that can become false again.  Event alerts
+# (new allocation, claim confirmed) are deliberately excluded from the sweep.
+CONDITION_ALERT_KINDS = (
+    "below_gas",
+    "deadline",
+    "invalid_proof",
+    "claim_error",
+    "missing_dataset",
+    "missing_eligibility",
+)
 # Absolute filesystem paths (POSIX or Windows) in text that is shown in the UI.
 _ABS_PATH = re.compile(r"(?<![:/\w])(?:[A-Za-z]:\\|/)(?:[^\s/\\'\"]+[\\/])+([^\s/\\'\"]+)")
 
@@ -93,6 +104,7 @@ class PlatformService:
         self.registry_path = registry_path
         self.db = Database(settings.db_path).init()
         self.endpoint_health = EndpointHealth()
+        self.notifier = Notifier.from_settings(settings, db=self.db)
         self._jobs: dict[str, threading.Thread] = {}
         self._job_lock = threading.RLock()
         self._check_lock = threading.Lock()
@@ -318,8 +330,49 @@ class PlatformService:
     # --------------------------------------------------------------- alerts
     def _generate_alerts(self, snapshot_id: int, payload: dict) -> int:
         previous = self.db.previous_claims(snapshot_id)
-        created = 0
-        before = len(self.db.list_alerts(include_ack=True))
+        new_alerts: list[dict] = []
+        active_keys: set[str] = set()
+
+        def emit(
+            *,
+            kind: str,
+            severity: str,
+            title: str,
+            body: str,
+            wallet: str | None = None,
+            drop_id: str | None = None,
+            tier: str | None = None,
+            persistent: bool = True,
+        ) -> None:
+            key = self.db.alert_key(
+                kind, title, wallet=wallet, drop_id=drop_id, tier=tier
+            )
+            if persistent:
+                active_keys.add(key)
+            alert_id = self.db.add_alert(
+                kind=kind,
+                severity=severity,
+                title=title,
+                body=body,
+                wallet=wallet,
+                drop_id=drop_id,
+                snapshot_id=snapshot_id,
+                dedupe_key=key,
+                tier=tier,
+            )
+            if alert_id is not None:
+                new_alerts.append(
+                    {
+                        "id": alert_id,
+                        "kind": kind,
+                        "severity": severity,
+                        "title": public_text(title),
+                        "body": public_text(body),
+                        "wallet": wallet,
+                        "drop_id": drop_id,
+                        "created_at": _now(),
+                    }
+                )
 
         for claim in payload["claims"]:
             wallet = claim["wallet"]
@@ -331,7 +384,7 @@ class PlatformService:
             if status == UNCLAIMED and not claim.get("expired"):
                 net = claim.get("net_usd")
                 if net is not None and net <= 0:
-                    self.db.add_alert(
+                    emit(
                         kind="below_gas",
                         severity="warning",
                         title=f"{drop} costs more gas than it is worth",
@@ -341,21 +394,21 @@ class PlatformService:
                         ),
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
                     )
                 deadline = _parse_deadline(claim.get("deadline"))
                 if deadline and deadline - datetime.now(timezone.utc) < timedelta(days=14):
-                    # No day count in the title: it is part of the dedupe key, so a
-                    # rescan tomorrow would otherwise duplicate the alert. The title
-                    # changes once, when the window enters its final three days, so an
-                    # acknowledged reminder still escalates before tokens are lost.
+                    # The tier is part of the dedupe key, so the same condition
+                    # can escalate from the 14-day reminder to the final-three-day
+                    # warning without duplicating on every scan.  The older tier
+                    # is resolved by the sweep below.
                     final_stretch = deadline - datetime.now(timezone.utc) <= timedelta(days=3)
+                    tier = "3d" if final_stretch else "14d"
                     title = (
                         f"{drop} claim window closes in 3 days or less"
                         if final_stretch
                         else f"{drop} claim window closing"
                     )
-                    self.db.add_alert(
+                    emit(
                         kind="deadline",
                         severity="critical",
                         title=title,
@@ -365,50 +418,48 @@ class PlatformService:
                         ),
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
+                        tier=tier,
                     )
                 newly_allocated = was == NO_ALLOCATION or (previous and was is None)
                 if newly_allocated:
-                    self.db.add_alert(
+                    emit(
                         kind="new_allocation",
                         severity="info",
                         title=f"New allocation detected: {drop}",
                         body=f"{wallet} now has an unclaimed allocation.",
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
+                        persistent=False,
                     )
                 if claim.get("proof_verified") is False:
-                    self.db.add_alert(
+                    emit(
                         kind="invalid_proof",
                         severity="critical",
                         title=f"Invalid proof for {drop}",
                         body=f"{wallet}: dataset proof does not match the on-chain root. Do not trust it.",
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
                     )
 
             if status == CLAIMED and was == UNCLAIMED:
-                self.db.add_alert(
+                emit(
                     kind="claimed",
                     severity="info",
                     title=f"Claim confirmed: {drop}",
                     body=f"{wallet} was unclaimed in the previous snapshot and is now claimed.",
                     wallet=wallet,
                     drop_id=claim["drop_id"],
-                    snapshot_id=snapshot_id,
+                    persistent=False,
                 )
 
             if status == ERROR:
-                self.db.add_alert(
+                emit(
                     kind="claim_error",
                     severity="critical",
                     title=f"Claim check failed: {drop}",
                     body=claim.get("note") or "unknown error",
                     wallet=wallet,
                     drop_id=claim["drop_id"],
-                    snapshot_id=snapshot_id,
                 )
 
         for row in self.db.list_airdrops(enabled_only=True):
@@ -416,7 +467,7 @@ class PlatformService:
             eligibility = payload_drop.get("eligibility") or {}
             dataset = eligibility.get("dataset")
             if dataset and not _dataset_exists(str(dataset)):
-                self.db.add_alert(
+                emit(
                     kind="missing_dataset",
                     severity="warning",
                     title=f"{payload_drop.get('name', row['id'])}: claims dataset missing",
@@ -425,26 +476,36 @@ class PlatformService:
                         "The drop cannot be checked until the file is available."
                     ),
                     drop_id=row["id"],
-                    snapshot_id=snapshot_id,
                 )
             if not payload_drop.get("eligibility"):
-                self.db.add_alert(
+                emit(
                     kind="missing_eligibility",
                     severity="warning",
                     title=f"{payload_drop.get('name', row['id'])} has no eligibility source",
                     body="Add a dataset, claim API or allocation view to make this drop checkable.",
                     drop_id=row["id"],
-                    snapshot_id=snapshot_id,
                 )
 
-        created = len(self.db.list_alerts(include_ack=True)) - before
-        return max(created, 0)
+        scanned_drops = sorted({str(claim["drop_id"]) for claim in payload["claims"]})
+        self.db.resolve_stale_alerts(
+            active_keys,
+            kinds=CONDITION_ALERT_KINDS,
+            drop_ids=scanned_drops,
+        )
+        if new_alerts:
+            self.notifier.dispatch(new_alerts)
+        return len(new_alerts)
 
-    def alerts(self, *, include_ack: bool = False) -> list[dict]:
-        rows = self.db.list_alerts(include_ack=include_ack)
+    def alerts(self, *, include_ack: bool = False, include_resolved: bool = False) -> list[dict]:
+        rows = self.db.list_alerts(
+            include_ack=include_ack,
+            include_resolved=include_resolved or include_ack,
+        )
         for row in rows:
             row["title"] = public_text(row["title"])
             row["body"] = public_text(row["body"])
+            if row.get("resolved_reason"):
+                row["resolved_reason"] = public_text(row["resolved_reason"])
         return rows
 
     def ack_alert(self, alert_id: int) -> bool:
@@ -454,6 +515,26 @@ class PlatformService:
     def ack_all_alerts(self) -> int:
         self._require_local_edits("acknowledge alerts")
         return self.db.ack_all_alerts()
+
+    def resolve_alert(self, alert_id: int, reason: str = "resolved by operator") -> bool:
+        self._require_local_edits("resolve an alert")
+        return self.db.resolve_alert(alert_id, reason)
+
+    def reopen_alert(self, alert_id: int) -> bool:
+        self._require_local_edits("reopen an alert")
+        try:
+            return self.db.reopen_alert(alert_id)
+        except sqlite3.IntegrityError:
+            raise Conflict(
+                "another open alert already covers this condition; acknowledge or resolve it first"
+            ) from None
+
+    def notifications(self, limit: int = 50) -> list[dict]:
+        rows = self.db.list_notifications(limit)
+        for row in rows:
+            if row.get("error"):
+                row["error"] = public_text(row["error"])
+        return rows
 
     # ------------------------------------------------------- claim execution
     def prepare_claim(self, drop_id: str, wallet: str) -> dict:
