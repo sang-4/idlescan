@@ -11,7 +11,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -567,3 +567,295 @@ class Database:
                 "positions": len(claims),
             }
         return result
+
+
+    # ------------------------------------------------------------- db admin
+    def table_counts(self) -> dict[str, int]:
+        """Row counts for the tables an operator cares about."""
+        tables = (
+            "wallets",
+            "airdrops",
+            "snapshots",
+            "holdings",
+            "claims",
+            "alerts",
+            "executions",
+            "audit",
+            "jobs",
+            "notifications",
+        )
+        with self.connect() as connection:
+            counts: dict[str, int] = {}
+            for table in tables:
+                try:
+                    counts[table] = int(
+                        connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    )
+                except sqlite3.OperationalError:
+                    counts[table] = 0  # table added by a future/absent migration
+            return counts
+
+    def status(self) -> dict:
+        """Read-only summary for ``idlescan db status``."""
+        exists = self.path.is_file()
+        size = self.path.stat().st_size if exists else 0
+        current = self.schema_version() if exists else 0
+        payload: dict[str, Any] = {
+            "path": str(self.path),
+            "exists": exists,
+            "size_bytes": size,
+            "schema_version": current,
+            "latest_schema_version": LATEST_SCHEMA_VERSION,
+            "pending_migrations": max(0, LATEST_SCHEMA_VERSION - current),
+            "up_to_date": exists and current == LATEST_SCHEMA_VERSION,
+            "counts": {},
+            "latest_snapshot": None,
+        }
+        if exists and current:
+            payload["counts"] = self.table_counts()
+            latest = self.latest_snapshot()
+            if latest:
+                payload["latest_snapshot"] = {
+                    "id": latest["id"],
+                    "created_at": latest["created_at"],
+                    "trigger": latest.get("trigger"),
+                }
+        return payload
+
+    def check(self) -> dict:
+        """Integrity and consistency checks; never modifies the database."""
+        problems: list[str] = []
+        if not self.path.is_file():
+            return {
+                "ok": False,
+                "schema_version": 0,
+                "latest_schema_version": LATEST_SCHEMA_VERSION,
+                "checks": {},
+                "problems": ["database file does not exist"],
+            }
+        with self.connect() as connection:
+            current = schema_version(connection)
+            integrity_rows = [
+                str(row[0])
+                for row in connection.execute("PRAGMA integrity_check").fetchall()
+            ]
+            integrity_ok = integrity_rows == ["ok"]
+            if not integrity_ok:
+                problems.extend(f"integrity: {row}" for row in integrity_rows[:20])
+
+            foreign_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+            for row in foreign_rows:
+                problems.append(
+                    f"foreign key violation: table={row[0]} rowid={row[1]} parent={row[2]}"
+                )
+
+            def scalar(query: str, parameters: Sequence[Any] = ()) -> int:
+                return int(connection.execute(query, parameters).fetchone()[0])
+
+            orphan_claims = scalar(
+                "SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
+            )
+            orphan_holdings = scalar(
+                "SELECT COUNT(*) FROM holdings WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
+            )
+            if orphan_claims:
+                problems.append(f"{orphan_claims} claim row(s) reference a missing snapshot")
+            if orphan_holdings:
+                problems.append(f"{orphan_holdings} holding row(s) reference a missing snapshot")
+
+            bad_snapshots = 0
+            for row in connection.execute("SELECT id, totals, report FROM snapshots"):
+                try:
+                    json.loads(row["totals"])
+                    json.loads(row["report"])
+                except (TypeError, ValueError):
+                    bad_snapshots += 1
+            if bad_snapshots:
+                problems.append(f"{bad_snapshots} snapshot(s) contain invalid JSON")
+
+            if current > LATEST_SCHEMA_VERSION:
+                problems.append(
+                    f"schema v{current} is newer than this release (v{LATEST_SCHEMA_VERSION})"
+                )
+            elif current < LATEST_SCHEMA_VERSION:
+                problems.append(
+                    f"schema v{current} is behind v{LATEST_SCHEMA_VERSION}; run "
+                    "`idlescan db migrate`"
+                )
+
+            if "dedupe_key" in {
+                row[1] for row in connection.execute("PRAGMA table_info(alerts)")
+            }:
+                missing_keys = scalar(
+                    "SELECT COUNT(*) FROM alerts WHERE dedupe_key IS NULL AND resolved_at IS NULL"
+                )
+                if missing_keys:
+                    problems.append(f"{missing_keys} open alert(s) have no dedupe key")
+
+            counts = {
+                "snapshots": scalar("SELECT COUNT(*) FROM snapshots"),
+                "claims": scalar("SELECT COUNT(*) FROM claims"),
+                "holdings": scalar("SELECT COUNT(*) FROM holdings"),
+                "alerts": scalar("SELECT COUNT(*) FROM alerts"),
+            }
+        return {
+            "ok": not problems,
+            "schema_version": current,
+            "latest_schema_version": LATEST_SCHEMA_VERSION,
+            "checks": {
+                "integrity": integrity_ok,
+                "foreign_keys": not foreign_rows,
+                "orphans": not (orphan_claims or orphan_holdings),
+                "snapshot_json": not bad_snapshots,
+                "schema": current == LATEST_SCHEMA_VERSION,
+                "counts": counts,
+            },
+            "problems": problems,
+        }
+
+    @staticmethod
+    def _cutoff(days: int) -> str:
+        moment = datetime.now(timezone.utc) - timedelta(days=days)
+        return moment.replace(microsecond=0).isoformat()
+
+    def _prune_plan(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        snapshots: int,
+        alerts_days: int,
+        audit_days: int,
+        executions_days: int,
+        jobs_days: int,
+    ) -> dict[str, int]:
+        plan: dict[str, int] = {}
+
+        if snapshots > 0:
+            plan["snapshots"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM snapshots WHERE id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+            plan["holdings"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM holdings WHERE snapshot_id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+            plan["claims"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+
+        def age_count(table: str, days: int, extra: str = "") -> int:
+            if days <= 0:
+                return 0
+            query = f"SELECT COUNT(*) FROM {table} WHERE created_at < ?"
+            if extra:
+                query += f" AND {extra}"
+            return int(connection.execute(query, (self._cutoff(days),)).fetchone()[0])
+
+        plan["alerts"] = age_count(
+            "alerts", alerts_days, "acknowledged = 1 AND snapshot_id IS NULL"
+        )
+        plan["audit"] = age_count("audit", audit_days)
+        plan["executions"] = age_count("executions", executions_days)
+        plan["jobs"] = age_count("jobs", jobs_days, "finished_at IS NOT NULL")
+        plan["notifications"] = age_count(
+            "notifications", alerts_days, "status != 'pending'"
+        )
+        return {key: value for key, value in plan.items() if value}
+
+    def prune(
+        self,
+        *,
+        snapshots: int = 90,
+        alerts_days: int = 180,
+        audit_days: int = 365,
+        executions_days: int = 365,
+        jobs_days: int = 30,
+        dry_run: bool = True,
+        vacuum: bool = False,
+    ) -> dict:
+        """Delete history outside the retention windows.
+
+        Dry-run by default: callers must opt in to deletion.  The newest
+        ``snapshots`` snapshots and every open alert are always kept.
+        """
+        with self.connect() as connection:
+            plan = self._prune_plan(
+                connection,
+                snapshots=max(0, snapshots),
+                alerts_days=alerts_days,
+                audit_days=audit_days,
+                executions_days=executions_days,
+                jobs_days=jobs_days,
+            )
+            if not dry_run and plan:
+                if snapshots > 0:
+                    keep = int(snapshots)
+                    connection.execute(
+                        "UPDATE alerts SET snapshot_id = NULL WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM holdings WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM claims WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM snapshots WHERE id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                if alerts_days > 0:
+                    cutoff = self._cutoff(alerts_days)
+                    connection.execute(
+                        "DELETE FROM alerts WHERE created_at < ? AND acknowledged = 1 "
+                        "AND snapshot_id IS NULL",
+                        (cutoff,),
+                    )
+                    connection.execute(
+                        "DELETE FROM notifications WHERE created_at < ? AND status != 'pending'",
+                        (cutoff,),
+                    )
+                if audit_days > 0:
+                    connection.execute(
+                        "DELETE FROM audit WHERE created_at < ?", (self._cutoff(audit_days),)
+                    )
+                if executions_days > 0:
+                    connection.execute(
+                        "DELETE FROM executions WHERE created_at < ?",
+                        (self._cutoff(executions_days),),
+                    )
+                if jobs_days > 0:
+                    connection.execute(
+                        "DELETE FROM jobs WHERE created_at < ? AND finished_at IS NOT NULL",
+                        (self._cutoff(jobs_days),),
+                    )
+        if vacuum and not dry_run:
+            self.vacuum()
+        return {
+            "dry_run": dry_run,
+            "deleted": plan,
+            "vacuumed": bool(vacuum and not dry_run),
+            "retention": {
+                "snapshots": snapshots,
+                "alerts_days": alerts_days,
+                "audit_days": audit_days,
+                "executions_days": executions_days,
+                "jobs_days": jobs_days,
+            },
+        }

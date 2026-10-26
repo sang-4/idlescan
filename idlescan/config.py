@@ -163,6 +163,11 @@ class Settings:
 
     # WP-06
     backup_keep: int = 5
+    retention_snapshots: int = 90
+    retention_alerts_days: int = 180
+    retention_audit_days: int = 365
+    retention_executions_days: int = 365
+    retention_jobs_days: int = 30
 
     @property
     def write_enabled(self) -> bool:
@@ -259,6 +264,17 @@ class Settings:
             errors.append(
                 "IDLESCAN_NOTIFY_MIN_SEVERITY must be one of " + ", ".join(SEVERITIES)
             )
+        if self.backup_keep < 1:
+            errors.append("IDLESCAN_BACKUP_KEEP must be at least 1")
+        for name, value in (
+            ("retention_snapshots", self.retention_snapshots),
+            ("retention_alerts_days", self.retention_alerts_days),
+            ("retention_audit_days", self.retention_audit_days),
+            ("retention_executions_days", self.retention_executions_days),
+            ("retention_jobs_days", self.retention_jobs_days),
+        ):
+            if value < 0:
+                errors.append(f"IDLESCAN_{name.upper()} must be zero or positive (0 keeps all)")
         return errors
 
     def rpc_endpoints(self, chain) -> list[str]:
@@ -336,6 +352,11 @@ def load_settings(env_file: str | Path | None = None, *, environ: dict[str, str]
         notify_kinds=_as_list(get("IDLESCAN_NOTIFY_KINDS"), []),
         notify_digest=_as_bool(get("IDLESCAN_NOTIFY_DIGEST"), False),
         backup_keep=_as_int(get("IDLESCAN_BACKUP_KEEP"), 5),
+        retention_snapshots=_as_int(get("IDLESCAN_RETENTION_SNAPSHOTS"), 90),
+        retention_alerts_days=_as_int(get("IDLESCAN_RETENTION_ALERTS_DAYS"), 180),
+        retention_audit_days=_as_int(get("IDLESCAN_RETENTION_AUDIT_DAYS"), 365),
+        retention_executions_days=_as_int(get("IDLESCAN_RETENTION_EXECUTIONS_DAYS"), 365),
+        retention_jobs_days=_as_int(get("IDLESCAN_RETENTION_JOBS_DAYS"), 30),
     )
     if not settings.db_path.is_absolute():
         settings.db_path = (PROJECT_ROOT / settings.db_path).resolve()

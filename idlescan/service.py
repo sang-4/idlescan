@@ -1356,8 +1356,31 @@ class PlatformService:
         finally:
             destination.close()
             source.close()
+        if not target or Path(target).expanduser().is_dir():
+            self._rotate_backups(path.parent)
         self.db.log("system", "db.backup", path.name)
         return path
+
+    def prune_database(self, **kwargs) -> dict:
+        self._require_local_edits("prune the database")
+        return self.db.prune(**kwargs)
+
+    def _rotate_backups(self, directory: Path) -> list[Path]:
+        """Keep only the newest ``IDLESCAN_BACKUP_KEEP`` backups in a directory."""
+        keep = max(1, self.settings.backup_keep)
+        candidates = sorted(
+            (item for item in directory.glob("idlescan-*.db") if item.is_file()),
+            key=lambda item: (item.stat().st_mtime, item.name),
+            reverse=True,
+        )
+        removed: list[Path] = []
+        for stale in candidates[keep:]:
+            try:
+                stale.unlink()
+                removed.append(stale)
+            except OSError:
+                continue
+        return removed
 
     # ------------------------------------------------------------------ demo
     def seed_demo(self) -> None:

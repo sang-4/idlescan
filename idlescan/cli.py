@@ -10,6 +10,7 @@ from typing import Sequence
 
 from .abi import normalise_address
 from .cache import Cache
+from .db import Database
 from .chains import ConfigError, load_chains, load_tokens
 from .prices import PriceOracle
 from .registry import load_registry
@@ -176,6 +177,37 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--json", action="store_true")
     backup.add_argument("--env-file", type=Path)
     backup.add_argument("--db", type=Path)
+
+    db = sub.add_parser("db", help="inspect, migrate, check and prune the local database")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    db_status = db_sub.add_parser("status", help="show schema version, size and row counts")
+    db_status.add_argument("--json", action="store_true")
+    db_status.add_argument("--env-file", type=Path)
+    db_status.add_argument("--db", type=Path)
+
+    db_migrate = db_sub.add_parser("migrate", help="apply pending schema migrations")
+    db_migrate.add_argument("--json", action="store_true")
+    db_migrate.add_argument("--env-file", type=Path)
+    db_migrate.add_argument("--db", type=Path)
+
+    db_check = db_sub.add_parser("check", help="integrity and consistency checks (read-only)")
+    db_check.add_argument("--json", action="store_true")
+    db_check.add_argument("--env-file", type=Path)
+    db_check.add_argument("--db", type=Path)
+
+    db_prune = db_sub.add_parser(
+        "prune", help="delete history outside retention windows (dry-run by default)"
+    )
+    db_prune.add_argument("--yes", action="store_true", help="actually delete rows")
+    db_prune.add_argument("--snapshots", type=int, help="snapshots to keep (default: setting)")
+    db_prune.add_argument("--alerts-days", type=int)
+    db_prune.add_argument("--audit-days", type=int)
+    db_prune.add_argument("--executions-days", type=int)
+    db_prune.add_argument("--jobs-days", type=int)
+    db_prune.add_argument("--vacuum", action="store_true", help="VACUUM after deleting")
+    db_prune.add_argument("--json", action="store_true")
+    db_prune.add_argument("--env-file", type=Path)
+    db_prune.add_argument("--db", type=Path)
 
     calendar = sub.add_parser("calendar", help="export airdrop deadlines as an iCalendar feed")
     calendar.add_argument("--drop", help="only this airdrop id")
@@ -777,6 +809,120 @@ def cmd_calendar(args: argparse.Namespace) -> int:
     return 0
 
 
+def _db_path(args: argparse.Namespace) -> Path:
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+    return settings.db_path
+
+
+def cmd_db(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+
+    if args.db_command == "status":
+        payload = Database(settings.db_path).status()
+        if args.json:
+            print(json.dumps(payload, indent=2, default=str))
+            return 0
+        print(f"path            {payload['path']}")
+        print(f"exists          {'yes' if payload['exists'] else 'no'}")
+        print(f"size            {payload['size_bytes']:,} bytes")
+        print(
+            f"schema          v{payload['schema_version']} "
+            f"(latest v{payload['latest_schema_version']})"
+            + ("" if payload["up_to_date"] else f"  ·  {payload['pending_migrations']} pending")
+        )
+        for table, count in payload["counts"].items():
+            print(f"{table:<15} {count:,}")
+        if payload["latest_snapshot"]:
+            latest = payload["latest_snapshot"]
+            print(f"latest snapshot #{latest['id']}  {latest['created_at']}  ({latest['trigger']})")
+        return 0
+
+    if args.db_command == "migrate":
+        db = Database(settings.db_path)
+        before = db.status()
+        db.init()
+        after = db.status()
+        backup = None
+        if before["schema_version"]:
+            candidate = settings.db_path.with_name(
+                f"{settings.db_path.name}.pre-v{before['schema_version']}.bak"
+            )
+            if candidate.is_file():
+                backup = str(candidate)
+        payload = {
+            "path": str(settings.db_path),
+            "from_version": before["schema_version"],
+            "to_version": after["schema_version"],
+            "applied": getattr(db, "applied_migrations", []),
+            "backup": backup,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        if payload["applied"]:
+            print(
+                f"migrated {payload['path']} from v{payload['from_version']} "
+                f"to v{payload['to_version']} ({payload['applied']})"
+            )
+            if backup:
+                print(f"pre-migration backup: {backup}")
+        else:
+            print(f"{payload['path']} is already at schema v{payload['to_version']}")
+        return 0
+
+    if args.db_command == "check":
+        payload = Database(settings.db_path).check()
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif payload["ok"]:
+            print(
+                f"ok: {payload['checks']['counts']} "
+                f"schema v{payload['schema_version']}"
+            )
+        else:
+            print("database check found problems:", file=sys.stderr)
+            for problem in payload["problems"]:
+                print(f"  - {problem}", file=sys.stderr)
+        return 0 if payload["ok"] else 1
+
+    if args.db_command == "prune":
+        def choose(value, setting):
+            return setting if value is None else value
+
+        db = Database(settings.db_path).init()
+        payload = db.prune(
+            snapshots=choose(args.snapshots, settings.retention_snapshots),
+            alerts_days=choose(args.alerts_days, settings.retention_alerts_days),
+            audit_days=choose(args.audit_days, settings.retention_audit_days),
+            executions_days=choose(args.executions_days, settings.retention_executions_days),
+            jobs_days=choose(args.jobs_days, settings.retention_jobs_days),
+            dry_run=not args.yes,
+            vacuum=args.vacuum,
+        )
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        if not payload["deleted"]:
+            print("nothing to prune")
+            return 0
+        verb = "would delete" if payload["dry_run"] else "deleted"
+        for table, count in payload["deleted"].items():
+            print(f"{verb:<13} {count:>6} {table}")
+        if payload["dry_run"]:
+            print("dry run: re-run with --yes to apply")
+        elif payload["vacuumed"]:
+            print("vacuumed")
+        return 0
+
+    raise SystemExit(f"unknown db command {args.db_command!r}")
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     _, service = _service(args)
     try:
@@ -808,6 +954,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "alerts": cmd_alerts,
         "export": cmd_export,
         "backup": cmd_backup,
+        "db": cmd_db,
         "calendar": cmd_calendar,
     }
     try:

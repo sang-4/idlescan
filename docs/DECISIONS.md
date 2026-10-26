@@ -77,3 +77,11 @@ exponential backoff, then a dead-letter state.
 Before applying any pending migration to an existing database, a
 `<db>.pre-v<N>.bak` file is created and verified. If the backup cannot be written,
 the database is not migrated and the process fails with an actionable message.
+
+## D-013 — Retention defaults and dry-run pruning
+
+`IDLESCAN_RETENTION_SNAPSHOTS=90`, alerts 180 days, audit 365 days, executions
+365 days, jobs 30 days. `idlescan db prune` is a dry run unless `--yes` is
+passed, the newest snapshot is always kept, and open alerts are never deleted.
+`0` disables pruning for that category. Backups written to a directory are
+rotated to the newest `IDLESCAN_BACKUP_KEEP` (default 5) files.
