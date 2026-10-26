@@ -107,6 +107,20 @@ class MockRpc:
     def _eth_gasPrice(self) -> str:
         return hex(12_000_000_000)  # 12 gwei
 
+    def _eth_feeHistory(self, count: str, block: str, percentiles: list[int]) -> dict:
+        return {
+            "oldestBlock": hex(19_000_000 - 4),
+            "baseFeePerGas": [hex(10_000_000_000)] * 6,
+            "gasUsedRatio": [0.5] * 5,
+            "reward": [[hex(1_000_000_000)] for _ in range(5)],
+        }
+
+    def _eth_maxPriorityFeePerGas(self) -> str:
+        return hex(1_000_000_000)
+
+    def _eth_getBlockByNumber(self, block: str, full: bool) -> dict:
+        return {"number": hex(19_000_000), "baseFeePerGas": hex(10_000_000_000)}
+
     def _eth_estimateGas(self, tx: dict) -> str:
         if tx.get("to", "").lower() != DISTRIBUTOR:
             raise RpcError("execution reverted")

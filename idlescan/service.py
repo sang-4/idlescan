@@ -246,6 +246,7 @@ class PlatformService:
             prices=PriceOracle(),
             rpc_factory=self.rpc_factory or (lambda chain: Rpc(list(chain.rpcs))),
             verbose=progress,
+            gas_buffer_pct=self.settings.gas_buffer_pct,
         )
 
     def run_scan_sync(
@@ -445,6 +446,13 @@ class PlatformService:
             "value": "0x0",
             "data": row["calldata"],
         }
+        if row.get("gas_limit"):
+            tx["gasLimit"] = hex(int(row["gas_limit"]))
+        if row.get("fee_model") == "eip1559" and row.get("max_fee_per_gas"):
+            tx["maxFeePerGas"] = hex(int(row["max_fee_per_gas"]))
+            tx["maxPriorityFeePerGas"] = hex(int(row["max_priority_fee_per_gas"] or 0))
+        elif row.get("fee_per_gas"):
+            tx["gasPrice"] = hex(int(row["fee_per_gas"]))
         self.db.add_execution(
             wallet=row["wallet"],
             drop_id=drop_id,
@@ -464,6 +472,9 @@ class PlatformService:
                 "decimals": row["decimals"],
                 "usd_value": row["usd_value"],
                 "gas_usd": row["gas_usd"],
+                "gas_usd_buffered": row.get("gas_cost_usd_buffered"),
+                "gas_estimate_quality": row.get("gas_estimate_quality"),
+                "gas_note": row.get("gas_note"),
                 "net_usd": row["net_usd"],
                 "distributor": row["distributor"],
             },
@@ -1261,6 +1272,8 @@ class PlatformService:
             claim.usd_price = demo_usd
             if claim.gas_native is not None:
                 claim.gas_usd = claim.gas_native * eth_usd
+            if claim.gas_cost_native_buffered is not None:
+                claim.gas_cost_usd_buffered = claim.gas_cost_native_buffered * eth_usd
         return report
 
 

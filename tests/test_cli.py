@@ -171,7 +171,7 @@ class PlatformCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("nothing was saved", out)
         self.assertIn("demo-merkle", out)
-        self.assertIn("$607.01", out)
+        self.assertIn("$606.51", out)
         self.assertIn("tracked", out)
 
         code, out, err = run_cli(

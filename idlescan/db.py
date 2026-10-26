@@ -1,7 +1,8 @@
 """SQLite persistence.
 
-One file, no ORM, no migrations framework - `init()` is idempotent and the schema
-version is tracked in `meta` so future changes can be applied in place.
+One file, no ORM. Schema changes are applied by the ordered migrations in
+:mod:`idlescan.migrations`; opening an existing database creates a backup before
+the first upgrade and refuses files written by a newer release.
 """
 
 from __future__ import annotations
@@ -14,133 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-SCHEMA_VERSION = 1
+from .migrations import LATEST_SCHEMA_VERSION, apply_migrations, schema_version
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS wallets (
-    address TEXT PRIMARY KEY,
-    label TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    archived INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS airdrops (
-    id TEXT PRIMARY KEY,
-    payload TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    source TEXT NOT NULL DEFAULT 'registry',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    message TEXT NOT NULL DEFAULT '',
-    progress REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    finished_at TEXT,
-    error TEXT,
-    result TEXT
-);
-
-CREATE TABLE IF NOT EXISTS snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    chains TEXT NOT NULL,
-    wallets TEXT NOT NULL,
-    trigger TEXT NOT NULL DEFAULT 'manual',
-    totals TEXT NOT NULL,
-    report TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS holdings (
-    snapshot_id INTEGER NOT NULL,
-    chain TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    asset TEXT NOT NULL,
-    asset_address TEXT,
-    decimals INTEGER NOT NULL,
-    raw TEXT NOT NULL,
-    usd_price REAL,
-    usd_value REAL
-);
-
-CREATE TABLE IF NOT EXISTS claims (
-    snapshot_id INTEGER NOT NULL,
-    drop_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    chain TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    distributor TEXT NOT NULL,
-    status TEXT NOT NULL,
-    expired INTEGER NOT NULL DEFAULT 0,
-    deadline TEXT,
-    amount_raw TEXT NOT NULL DEFAULT '0',
-    decimals INTEGER NOT NULL DEFAULT 18,
-    token TEXT,
-    usd_price REAL,
-    usd_value REAL,
-    gas_native REAL,
-    gas_usd REAL,
-    net_usd REAL,
-    proof_verified INTEGER,
-    eligibility_source TEXT,
-    note TEXT,
-    calldata TEXT
-);
-
-CREATE TABLE IF NOT EXISTS alerts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    wallet TEXT,
-    drop_id TEXT,
-    snapshot_id INTEGER,
-    acknowledged INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS executions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    drop_id TEXT NOT NULL,
-    chain TEXT NOT NULL,
-    tx_hash TEXT,
-    status TEXT NOT NULL,
-    detail TEXT
-);
-
-CREATE TABLE IF NOT EXISTS audit (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    action TEXT NOT NULL,
-    detail TEXT NOT NULL DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_claims_snapshot ON claims(snapshot_id);
-CREATE INDEX IF NOT EXISTS idx_claims_wallet ON claims(wallet);
-CREATE INDEX IF NOT EXISTS idx_holdings_snapshot ON holdings(snapshot_id);
-CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
-DROP INDEX IF EXISTS idx_alerts_unique;
-DELETE FROM alerts WHERE id NOT IN (
-    SELECT MIN(id) FROM alerts
-    GROUP BY kind, IFNULL(wallet,''), IFNULL(drop_id,''), title
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_unique
-    ON alerts(kind, IFNULL(wallet,''), IFNULL(drop_id,''), title);
-"""
+SCHEMA_VERSION = LATEST_SCHEMA_VERSION
 
 
 def now() -> str:
@@ -172,15 +49,27 @@ class Database:
             connection.close()
 
     def init(self) -> "Database":
-        with self._lock, self.connect() as connection:
-            connection.executescript(SCHEMA)
-            connection.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(SCHEMA_VERSION),),
-            )
+        """Open the database and apply any pending migrations."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with sqlite3.connect(self.path, timeout=15) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA busy_timeout=5000")
+                applied = apply_migrations(connection, self.path)
+                connection.commit()
+            self.applied_migrations = applied
         self._initialised = True
         return self
+
+    def schema_version(self) -> int:
+        with self.connect() as connection:
+            return schema_version(connection)
+
+    def vacuum(self) -> None:
+        with self._lock:
+            with sqlite3.connect(self.path) as connection:
+                connection.execute("VACUUM")
 
     # -------------------------------------------------------------- wallets
     def add_wallet(self, address: str, label: str = "", tags: str = "") -> dict:
@@ -303,11 +192,21 @@ class Database:
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------- snapshots
-    def save_snapshot(self, *, chains: Sequence[str], wallets: Sequence[str], totals: dict, report: dict, trigger: str = "manual") -> int:
+    def save_snapshot(
+        self,
+        *,
+        chains: Sequence[str],
+        wallets: Sequence[str],
+        totals: dict,
+        report: dict,
+        trigger: str = "manual",
+        duration_ms: int | None = None,
+        phases: dict | None = None,
+    ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO snapshots(created_at, chains, wallets, trigger, totals, report) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
+                "INSERT INTO snapshots(created_at, chains, wallets, trigger, totals, report, duration_ms, phases) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     now(),
                     json.dumps(list(chains)),
@@ -315,6 +214,8 @@ class Database:
                     trigger,
                     json.dumps(totals),
                     json.dumps(report),
+                    duration_ms,
+                    json.dumps(phases) if phases is not None else None,
                 ),
             )
             snapshot_id = int(cursor.lastrowid)
@@ -338,8 +239,13 @@ class Database:
                 connection.execute(
                     "INSERT INTO claims(snapshot_id, drop_id, name, chain, wallet, distributor, status, "
                     "expired, deadline, amount_raw, decimals, token, usd_price, usd_value, gas_native, gas_usd, "
-                    "net_usd, proof_verified, eligibility_source, note, calldata) "
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "net_usd, proof_verified, eligibility_source, note, calldata, "
+                    "gas_units, fee_per_gas, l1_fee_wei, gas_cost_native_raw, gas_cost_usd_raw, "
+                    "gas_cost_native_buffered, gas_cost_usd_buffered, "
+                    "gas_estimate_quality, gas_note, gas_limit, fee_source, fee_model, root, "
+                    "price_source, price_asof, price_confidence) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         snapshot_id,
                         claim["drop_id"],
@@ -362,6 +268,22 @@ class Database:
                         claim.get("eligibility_source"),
                         claim.get("note"),
                         claim.get("claim_calldata"),
+                        claim.get("gas_units"),
+                        claim.get("fee_per_gas"),
+                        claim.get("l1_fee_wei"),
+                        claim.get("gas_cost_native_raw", claim.get("gas_native")),
+                        claim.get("gas_cost_usd_raw", claim.get("gas_usd")),
+                        claim.get("gas_cost_native_buffered"),
+                        claim.get("gas_cost_usd_buffered"),
+                        claim.get("gas_estimate_quality"),
+                        claim.get("gas_note"),
+                        claim.get("gas_limit"),
+                        claim.get("fee_source"),
+                        claim.get("fee_model"),
+                        claim.get("root"),
+                        claim.get("price_source"),
+                        claim.get("price_asof"),
+                        claim.get("price_confidence"),
                     ),
                 )
         return snapshot_id
@@ -441,7 +363,12 @@ class Database:
         if min_net is not None:
             query += " AND IFNULL(net_usd, 0) >= ?"
             params.append(min_net)
-        query += " ORDER BY CASE status WHEN 'unclaimed' THEN 0 WHEN 'claimed' THEN 1 ELSE 2 END, IFNULL(net_usd, 0) DESC"
+        # Unknown net value is its own group, after known-value claims, so an
+        # unavailable gas estimate can never masquerade as a profitable one.
+        query += (
+            " ORDER BY CASE status WHEN 'unclaimed' THEN 0 WHEN 'claimed' THEN 1 ELSE 2 END,"
+            " CASE WHEN net_usd IS NULL THEN 1 ELSE 0 END, net_usd DESC"
+        )
         with self.connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
@@ -524,12 +451,45 @@ class Database:
         return {(row["drop_id"], row["wallet"]): row["status"] for row in rows}
 
     # ---------------------------------------------------------------- alerts
-    def add_alert(self, *, kind: str, severity: str, title: str, body: str, wallet: str | None = None, drop_id: str | None = None, snapshot_id: int | None = None) -> None:
+    @staticmethod
+    def alert_key(
+        kind: str,
+        title: str,
+        *,
+        wallet: str | None = None,
+        drop_id: str | None = None,
+        tier: str | None = None,
+    ) -> str:
+        """Stable identity of an alert condition.
+
+        ``tier`` lets a condition re-fire when it escalates (for example a
+        deadline moving from 14 days to 3 days) without duplicating on every
+        scan. Callers that do not pass a tier get the v1.1 behaviour.
+        """
+        parts = [kind, wallet or "", drop_id or "", title]
+        if tier:
+            parts.append(tier)
+        return "|".join(parts)
+
+    def add_alert(
+        self,
+        *,
+        kind: str,
+        severity: str,
+        title: str,
+        body: str,
+        wallet: str | None = None,
+        drop_id: str | None = None,
+        snapshot_id: int | None = None,
+        dedupe_key: str | None = None,
+        tier: str | None = None,
+    ) -> None:
+        key = dedupe_key or self.alert_key(kind, title, wallet=wallet, drop_id=drop_id, tier=tier)
         with self.connect() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (now(), kind, severity, title, body, wallet, drop_id, snapshot_id),
+                "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id, dedupe_key, tier) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now(), kind, severity, title, body, wallet, drop_id, snapshot_id, key, tier),
             )
 
     def list_alerts(self, *, include_ack: bool = False, limit: int = 100) -> list[dict]:

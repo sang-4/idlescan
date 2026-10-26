@@ -27,6 +27,10 @@ class NativeAsset:
     coingecko: str | None = None
 
 
+FEE_MODELS = ("eip1559", "legacy")
+L1_FEE_STRATEGIES = ("none", "included", "op_stack", "scroll", "unknown")
+
+
 @dataclass(frozen=True)
 class Chain:
     key: str
@@ -37,6 +41,10 @@ class Chain:
     explorer: str | None = None
     coingecko_platform: str | None = None
     defillama: str | None = None
+    fee_model: str = "eip1559"
+    l1_fee: str = "none"
+    l1_fee_oracle: str | None = None
+    stale_block_seconds: int = 3600
 
     @property
     def address_url(self) -> str | None:
@@ -107,9 +115,23 @@ def load_chains(path: Path | str | None = None) -> ChainConfig:
                 explorer=raw.get("explorer"),
                 coingecko_platform=raw.get("coingecko_platform"),
                 defillama=raw.get("defillama"),
+                fee_model=str(raw.get("fee_model") or "eip1559"),
+                l1_fee=str(raw.get("l1_fee") or "none"),
+                l1_fee_oracle=raw.get("l1_fee_oracle"),
+                stale_block_seconds=int(raw.get("stale_block_seconds", 3600)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigError(f"bad chain entry {raw!r}: {exc}") from exc
+        if chain.fee_model not in FEE_MODELS:
+            raise ConfigError(
+                f"chain {chain.key} has unknown fee_model {chain.fee_model!r}; "
+                f"expected one of {', '.join(FEE_MODELS)}"
+            )
+        if chain.l1_fee not in L1_FEE_STRATEGIES:
+            raise ConfigError(
+                f"chain {chain.key} has unknown l1_fee {chain.l1_fee!r}; "
+                f"expected one of {', '.join(L1_FEE_STRATEGIES)}"
+            )
         if not chain.rpcs:
             raise ConfigError(f"chain {chain.key} has no RPC endpoints")
         chains[chain.key] = chain

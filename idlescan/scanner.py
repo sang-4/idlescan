@@ -2,7 +2,8 @@
 
 Read-only by construction - the only RPC methods used are ``eth_chainId``,
 ``eth_blockNumber``, ``eth_getCode``, ``eth_getBalance``, ``eth_call``,
-``eth_gasPrice`` and ``eth_estimateGas``.
+``eth_feeHistory``, ``eth_maxPriorityFeePerGas``, ``eth_gasPrice`` and
+``eth_estimateGas``.  Nothing here can sign or broadcast.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from .abi import AbiError, calldata, decode_one, normalise_address
 from .cache import Cache
 from .chains import Chain, ChainConfig, Token
 from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
+from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
 from .prices import PriceOracle, provider_id_for
 from .registry import Airdrop
 from .rpc import Rpc, RpcError, describe_error
@@ -88,10 +90,26 @@ class ClaimCheck:
     decimals: int = 18
     amount_raw: int = 0
     usd_price: float | None = None
+    # Raw (unbuffered) gas cost.  ``gas_native``/``gas_usd`` keep their v1.1
+    # meaning so old exports and API consumers keep working.
     gas_native: float | None = None
     gas_usd: float | None = None
+    gas_cost_native_buffered: float | None = None
+    gas_cost_usd_buffered: float | None = None
+    gas_units: int | None = None
+    gas_limit: int | None = None
+    fee_per_gas: int | None = None
+    max_fee_per_gas: int | None = None
+    max_priority_fee_per_gas: int | None = None
+    fee_model: str | None = None
+    fee_source: str | None = None
+    l1_fee_wei: int | None = None
+    gas_estimate_quality: str = UNAVAILABLE
+    gas_note: str | None = None
+    gas_buffer_pct: int = 20
     native_symbol: str = "ETH"
     proof_verified: bool | None = None
+    root: str | None = None
     source: str | None = None
     note: str | None = None
     deadline: str | None = None
@@ -111,12 +129,35 @@ class ClaimCheck:
 
     @property
     def net_usd(self) -> float | None:
-        if self.status != UNCLAIMED:
+        """Value after the *buffered* gas cost, or ``None`` when not knowable."""
+        if self.status != UNCLAIMED or self.expired:
             return None
         value = self.usd_value
-        if value is None:
+        if value is None or self.gas_estimate_quality == UNAVAILABLE:
             return None
-        return value - (self.gas_usd or 0.0)
+        if self.gas_cost_usd_buffered is None:
+            return None
+        return value - self.gas_cost_usd_buffered
+
+    @property
+    def net_usd_raw(self) -> float | None:
+        """Value after the unbuffered gas cost (shown alongside the ranking figure)."""
+        if self.status != UNCLAIMED or self.expired:
+            return None
+        value = self.usd_value
+        if value is None or self.gas_estimate_quality == UNAVAILABLE or self.gas_usd is None:
+            return None
+        return value - self.gas_usd
+
+    @property
+    def net_group(self) -> str:
+        """Used by the UI/API to keep unknown-net claims in their own group."""
+        if self.status != UNCLAIMED:
+            return "not_claimable"
+        net = self.net_usd
+        if net is None:
+            return "unknown"
+        return "profitable" if net > 0 else "below_gas"
 
     @property
     def claimable(self) -> bool:
@@ -174,6 +215,7 @@ class Scanner:
         estimate_gas: bool = True,
         verbose: Callable[[str], None] | None = None,
         http_fetch: Callable[[str], dict] | None = None,
+        gas_buffer_pct: int = 20,
     ):
         self.chains = chains
         self.tokens = tokens
@@ -185,6 +227,7 @@ class Scanner:
         self.estimate_gas = estimate_gas
         self.verbose = verbose or (lambda message: None)
         self.http_fetch = http_fetch or _fetch_json
+        self.gas_buffer_pct = gas_buffer_pct
         self._rpcs: dict[str, Rpc] = {}
         self._datasets: dict[str, ClaimDataset | None] = {}
         self._leaf_modes: dict[str, tuple[str, bool] | None] = {}
@@ -797,17 +840,44 @@ class Scanner:
     def _attach_gas(
         self, chain: Chain, rpc: Rpc, row: ClaimCheck, wallet: str, report: ScanReport
     ) -> None:
+        """Attach a labelled gas estimate; failure stays ``unavailable``, never zero."""
         if not self.estimate_gas or not row.calldata:
+            row.gas_note = "gas estimation disabled for this scan"
             return
-        try:
-            estimate = rpc.request(
-                "eth_estimateGas", {"from": wallet, "to": row.distributor, "data": row.calldata}
+        estimate = estimate_claim(
+            rpc,
+            chain,
+            wallet=wallet,
+            distributor=row.distributor,
+            data=row.calldata,
+        )
+        row.gas_units = estimate.gas_units
+        row.gas_limit = estimate.gas_limit
+        row.l1_fee_wei = estimate.l1_fee_wei
+        row.gas_estimate_quality = estimate.quality
+        row.gas_note = estimate.note
+        row.gas_buffer_pct = self.gas_buffer_pct
+        if estimate.fee is not None:
+            row.fee_per_gas = estimate.fee.gas_price
+            row.max_fee_per_gas = estimate.fee.max_fee_per_gas
+            row.max_priority_fee_per_gas = estimate.fee.max_priority_fee_per_gas
+            row.fee_model = estimate.fee.model
+            row.fee_source = estimate.fee.source
+        cost_wei = estimate.cost_wei
+        if cost_wei is None:
+            if estimate.quality == UNAVAILABLE:
+                report.warnings.append(
+                    f"{row.name}: gas estimate unavailable ({estimate.note or 'no fee data'}); "
+                    "net value is unknown"
+                )
+            return
+        row.gas_native = gas_cost_native(cost_wei)
+        buffered = buffered_wei(cost_wei, self.gas_buffer_pct)
+        row.gas_cost_native_buffered = gas_cost_native(buffered)
+        if estimate.quality == PARTIAL:
+            report.warnings.append(
+                f"{row.name}: gas estimate is partial ({estimate.note or 'L1 component missing'})"
             )
-            gas_units = int(estimate, 16) if isinstance(estimate, str) else int(estimate)
-            price = int(rpc.request("eth_gasPrice"), 16)
-        except (RpcError, TypeError, ValueError):
-            return
-        row.gas_native = gas_units * price / 1e18
 
     # ----------------------------------------------------------------- prices
     def _apply_prices(self, report: ScanReport) -> None:
@@ -843,6 +913,8 @@ class Scanner:
             native_price = quotes.get(f"{row.chain}|native")
             if native_price is not None:
                 row.gas_usd = row.gas_native * native_price
+                if row.gas_cost_native_buffered is not None:
+                    row.gas_cost_usd_buffered = row.gas_cost_native_buffered * native_price
 
 
 def _decode_uint(value: Any) -> int:

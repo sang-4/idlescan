@@ -206,8 +206,24 @@ def to_dict(report: ScanReport) -> dict:
                 "usd_value": c.usd_value,
                 "gas_native": c.gas_native,
                 "gas_usd": c.gas_usd,
+                "gas_cost_native_buffered": c.gas_cost_native_buffered,
+                "gas_cost_usd_buffered": c.gas_cost_usd_buffered,
+                "gas_units": c.gas_units,
+                "gas_limit": c.gas_limit,
+                "fee_per_gas": c.fee_per_gas,
+                "max_fee_per_gas": c.max_fee_per_gas,
+                "max_priority_fee_per_gas": c.max_priority_fee_per_gas,
+                "fee_model": c.fee_model,
+                "fee_source": c.fee_source,
+                "l1_fee_wei": str(c.l1_fee_wei) if c.l1_fee_wei is not None else None,
+                "gas_estimate_quality": c.gas_estimate_quality,
+                "gas_note": c.gas_note,
+                "gas_buffer_pct": c.gas_buffer_pct,
                 "net_usd": c.net_usd,
+                "net_usd_raw": c.net_usd_raw,
+                "net_group": c.net_group,
                 "proof_verified": c.proof_verified,
+                "root": c.root,
                 "eligibility_source": c.source,
                 "note": c.note,
                 "claim_calldata": c.calldata,
@@ -227,7 +243,10 @@ def write_csv(report: ScanReport, path: Path) -> None:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
     writer.writerow(
-        ["kind", "chain", "wallet", "asset_or_drop", "status", "amount", "raw", "decimals", "usd_price", "usd_value", "gas_usd", "net_usd", "note", "reference"]
+        ["kind", "chain", "wallet", "asset_or_drop", "status", "amount", "raw", "decimals",
+         "usd_price", "usd_value", "gas_usd", "net_usd", "note", "reference",
+         "gas_units", "fee_per_gas", "l1_fee_wei", "gas_estimate_quality",
+         "gas_usd_buffered", "net_usd_raw"]
     )
     for holding in report.holdings:
         writer.writerow(
@@ -246,6 +265,7 @@ def write_csv(report: ScanReport, path: Path) -> None:
                 "",
                 "",
                 holding.asset_address or "",
+                "", "", "", "", "", "",
             ]
         )
     for claim in report.claims:
@@ -265,6 +285,12 @@ def write_csv(report: ScanReport, path: Path) -> None:
                 claim.net_usd if claim.net_usd is not None else "",
                 claim.note or "",
                 claim.distributor,
+                claim.gas_units if claim.gas_units is not None else "",
+                claim.fee_per_gas if claim.fee_per_gas is not None else "",
+                claim.l1_fee_wei if claim.l1_fee_wei is not None else "",
+                claim.gas_estimate_quality,
+                claim.gas_cost_usd_buffered if claim.gas_cost_usd_buffered is not None else "",
+                claim.net_usd_raw if claim.net_usd_raw is not None else "",
             ]
         )
     path.write_text(buffer.getvalue())
@@ -302,8 +328,8 @@ def render_markdown(report: ScanReport, *, show_empty: bool = False) -> str:
     lines += ["", "## Airdrops", ""]
     if claims:
         lines += [
-            "| Status | Chain | Drop | Amount | Value | Gas | Net | Proof | Wallet |",
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
+            "| Status | Chain | Drop | Amount | Value | Gas | Gas quality | Net | Proof | Wallet |",
+            "| --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- | --- |",
         ]
         for c in claims:
             proof = {True: "verified", False: "**INVALID**", None: "unverified"}[c.proof_verified]
@@ -312,6 +338,7 @@ def render_markdown(report: ScanReport, *, show_empty: bool = False) -> str:
                 f"{fmt_amount(c.amount) if c.amount_raw else '-'} | "
                 f"{'-' if c.status == CLAIMED or not c.amount_raw else fmt_usd(c.usd_value)} | "
                 f"{fmt_gas(c) if c.status == UNCLAIMED else '-'} | "
+                f"{c.gas_estimate_quality if c.status == UNCLAIMED else '-'} | "
                 f"{fmt_usd(c.net_usd) if c.net_usd is not None else '-'} | {proof} | `{c.wallet}` |"
             )
     else:

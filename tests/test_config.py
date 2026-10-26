@@ -86,7 +86,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.refresh_minutes, 15)
         warnings = settings.validate()
         self.assertEqual(len(warnings), 1)
-        self.assertIn("WRITE MODE", warnings[0])
+        self.assertIn("CLAIM HAND-OFF ENABLED", warnings[0])
 
     def test_environment_beats_env_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -103,11 +103,29 @@ class SettingsTests(unittest.TestCase):
         self.assertIn("non-loopback", str(ctx.exception))
 
     def test_remote_write_mode_allowed_with_explicit_opt_in(self):
-        settings = Settings(read_only=False, host="0.0.0.0", allow_remote_write=True)
-        self.assertEqual(len(settings.validate()), 1)
+        settings = Settings(
+            read_only=False,
+            host="0.0.0.0",
+            allow_remote_write=True,
+            allow_insecure_remote=True,
+        )
+        warnings = settings.validate()
+        self.assertTrue(any("CLAIM HAND-OFF ENABLED" in item for item in warnings))
+        self.assertTrue(any("INSECURE REMOTE" in item for item in warnings))
 
     def test_remote_read_only_is_fine(self):
+        settings = Settings(read_only=True, host="0.0.0.0", allow_insecure_remote=True)
+        warnings = settings.validate()
+        self.assertTrue(any("INSECURE REMOTE" in item for item in warnings))
+
+    def test_remote_without_token_is_refused(self):
         settings = Settings(read_only=True, host="0.0.0.0")
+        with self.assertRaises(SettingsError) as ctx:
+            settings.validate()
+        self.assertIn("IDLESCAN_AUTH_TOKEN", str(ctx.exception))
+
+    def test_remote_with_token_is_allowed(self):
+        settings = Settings(read_only=True, host="0.0.0.0", auth_token="s3cret")
         self.assertEqual(settings.validate(), [])
 
     def test_invalid_values_are_reported(self):
