@@ -63,6 +63,12 @@ class Conflict(ServiceError):
     status = 409
 
 
+class Lockdown(ServiceError):
+    """Local mutations are disabled by IDLESCAN_LOCKDOWN."""
+
+    status = 403
+
+
 @dataclass
 class ScanRequest:
     wallets: list[str]
@@ -123,8 +129,17 @@ class PlatformService:
         except ConfigError:
             return []
 
+    # --------------------------------------------------------------- gating
+    def _require_local_edits(self, action: str) -> None:
+        if self.settings.lockdown:
+            raise Lockdown(
+                f"local edits are locked (IDLESCAN_LOCKDOWN=true); cannot {action}. "
+                "Reads, exports and POST /api/check are still available."
+            )
+
     # ---------------------------------------------------------------- wallets
     def add_wallet(self, address: str, label: str = "", tags: str = "") -> dict:
+        self._require_local_edits("add a wallet")
         try:
             normalised = normalise_address(address)
         except ValueError as exc:
@@ -161,6 +176,7 @@ class PlatformService:
         return wallets
 
     def delete_wallet(self, address: str) -> bool:
+        self._require_local_edits("delete a wallet")
         removed = self.db.remove_wallet(address)
         if removed:
             self.db.log("api", "wallet.remove", address.lower())
@@ -168,6 +184,7 @@ class PlatformService:
 
     # ------------------------------------------------------------------ scans
     def start_scan(self, chain_keys: Sequence[str] | None = None, trigger: str = "manual") -> dict:
+        self._require_local_edits("start a scan")
         wallets = [w["address"] for w in self.db.list_wallets()]
         if not wallets:
             raise ServiceError("add at least one wallet before scanning")
@@ -425,9 +442,11 @@ class PlatformService:
         return rows
 
     def ack_alert(self, alert_id: int) -> bool:
+        self._require_local_edits("acknowledge an alert")
         return self.db.ack_alert(alert_id)
 
     def ack_all_alerts(self) -> int:
+        self._require_local_edits("acknowledge alerts")
         return self.db.ack_all_alerts()
 
     # ------------------------------------------------------- claim execution
@@ -438,6 +457,7 @@ class PlatformService:
         A failure is recorded in executions/audit and returned as an error; no
         partial transaction is ever handed out.
         """
+        self._require_local_edits("prepare a claim")
         self._require_write_mode("prepare claim transaction")
         snapshot = self.db.latest_snapshot()
         if not snapshot:
@@ -571,6 +591,7 @@ class PlatformService:
         )
 
     def confirm_claim(self, *, drop_id: str, wallet: str, tx_hash: str) -> dict:
+        self._require_local_edits("record a claim")
         self._require_write_mode("record a claim transaction")
         if not TX_HASH.match(tx_hash or ""):
             raise ServiceError("tx_hash must be a 32-byte hex transaction hash")
@@ -723,6 +744,7 @@ class PlatformService:
         return out
 
     def add_airdrop(self, payload: dict) -> dict:
+        self._require_local_edits("add an airdrop")
         candidate = dict(payload)
         candidate.setdefault("token_decimals", 18)
         try:
@@ -740,10 +762,12 @@ class PlatformService:
         return next(a for a in self.airdrops() if a["id"] == drop.id)
 
     def set_airdrop_enabled(self, drop_id: str, enabled: bool) -> None:
+        self._require_local_edits("change an airdrop")
         if not self.db.set_airdrop_enabled(drop_id, enabled):
             raise NotFound(f"airdrop {drop_id} not found")
 
     def delete_airdrop(self, drop_id: str) -> None:
+        self._require_local_edits("delete an airdrop")
         if not self.db.delete_airdrop(drop_id):
             raise Conflict("bundled registry entries cannot be deleted; disable them instead")
         self.db.log("api", "airdrop.delete", drop_id)
@@ -930,6 +954,7 @@ class PlatformService:
         }
 
     def add_wallets(self, entries: Sequence[dict | str]) -> dict:
+        self._require_local_edits("import wallets")
         """Bulk watchlist import. Invalid rows are reported, valid rows still land."""
         if not isinstance(entries, (list, tuple)):
             raise ServiceError("'wallets' must be a list")
@@ -1296,6 +1321,7 @@ class PlatformService:
         raise ServiceError(f"unknown export format {fmt!r} (json, csv, md)")
 
     def backup(self, target: Path | str | None = None) -> Path:
+        self._require_local_edits("create a backup")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         if target:
             path = Path(target).expanduser()

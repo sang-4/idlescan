@@ -14,6 +14,7 @@ Design notes
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -21,6 +22,8 @@ import signal
 import socket
 import sys
 import threading
+import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -28,10 +31,59 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Settings
-from .service import Conflict, NotFound, PlatformService, ServiceError, WriteDisabled
+from .service import (
+    Conflict,
+    Lockdown,
+    NotFound,
+    PlatformService,
+    ServiceError,
+    WriteDisabled,
+)
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 MAX_BODY = 1_000_000
+
+
+class PayloadTooLarge(ServiceError):
+    status = 413
+
+
+class UnsupportedMediaType(ServiceError):
+    status = 415
+
+
+class TooManyRequests(ServiceError):
+    status = 429
+
+
+class Unauthorized(ServiceError):
+    status = 401
+
+
+class MethodNotAllowed(ServiceError):
+    status = 405
+
+
+class RateLimiter:
+    """In-process token buckets keyed by client and request class."""
+
+    def __init__(self) -> None:
+        self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: tuple[str, str], capacity: int, window: float) -> tuple[bool, int]:
+        if capacity <= 0:
+            return False, int(window)
+        now = time.monotonic()
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(capacity), now))
+            tokens = min(float(capacity), tokens + (now - last) * capacity / window)
+            if tokens < 1.0:
+                retry = max(1, int((1.0 - tokens) * window / capacity) + 1)
+                self._buckets[key] = (tokens, now)
+                return False, retry
+            self._buckets[key] = (tokens - 1.0, now)
+            return True, 0
 
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
@@ -84,7 +136,7 @@ class Router:
                 continue
             return handler, match.groupdict()
         if allowed:
-            raise ServiceError(f"method {method} not allowed on {path}")
+            raise MethodNotAllowed(f"method {method} not allowed on {path}")
         raise NotFound(f"no route for {method} {path}")
 
 
@@ -94,11 +146,13 @@ class ApiHandler(BaseHTTPRequestHandler):
     service: PlatformService
     settings: Settings
     warnings: list[str]
+    limiter: RateLimiter
 
     # ------------------------------------------------------------ plumbing
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-        if os.environ.get("IDLESCAN_HTTP_LOG") == "1":
-            super().log_message(fmt, *args)
+        if self.settings.http_log or os.environ.get("IDLESCAN_HTTP_LOG") == "1":
+            request_id = getattr(self, "request_id", "-")
+            super().log_message(f"[{request_id}] " + fmt, *args)
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")
@@ -115,15 +169,24 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._dispatch("DELETE")
 
+    def do_PUT(self) -> None:  # noqa: N802
+        self._dispatch("PUT")
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._dispatch("OPTIONS")
+
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
         self._head_only = method == "HEAD"
+        self.request_id = uuid.uuid4().hex[:16]
         try:
             if method in ("GET", "HEAD") and not path.startswith("/api/"):
                 self._serve_static(path, head=method == "HEAD")
                 return
+            self._rate_limit(method, path)
+            self._check_auth()
             if method in ("POST", "PATCH", "DELETE"):
                 self._check_origin()
             handler, params = self.router.match("GET" if method == "HEAD" else method, path)
@@ -133,6 +196,25 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
         except WriteDisabled as exc:
             self._send_json(403, {"error": str(exc), "code": "read_only"})
+        except Lockdown as exc:
+            self._send_json(403, {"error": str(exc), "code": "lockdown"})
+        except Unauthorized as exc:
+            self._send_json(
+                401,
+                {"error": str(exc), "code": "unauthorized"},
+                extra_headers={"www-authenticate": 'Bearer realm="idlescan"'},
+            )
+        except TooManyRequests as exc:
+            retry = getattr(exc, "retry_after", 60)
+            self._send_json(
+                429,
+                {"error": str(exc), "code": "rate_limited", "retry_after": retry},
+                extra_headers={"retry-after": str(retry)},
+            )
+        except PayloadTooLarge as exc:
+            self._send_json(413, {"error": str(exc), "code": "payload_too_large"})
+        except UnsupportedMediaType as exc:
+            self._send_json(415, {"error": str(exc), "code": "unsupported_media_type"})
         except NotFound as exc:
             self._send_json(404, {"error": str(exc), "code": "not_found"})
         except Conflict as exc:
@@ -144,10 +226,67 @@ class ApiHandler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self._send_json(500, {"error": f"{exc.__class__.__name__}: {exc}"})
 
+    # ------------------------------------------------------------ guard rails
+    def _rate_limit(self, method: str, path: str) -> None:
+        if not self.settings.rate_limit_enabled:
+            return
+        if path in ("/api/scan", "/api/check"):
+            kind, capacity, window = (
+                "scan",
+                self.settings.rate_limit_scan_per_ten_minutes,
+                600.0,
+            )
+        elif method in ("GET", "HEAD"):
+            kind, capacity, window = (
+                "read",
+                self.settings.rate_limit_read_per_minute,
+                60.0,
+            )
+        else:
+            kind, capacity, window = (
+                "write",
+                self.settings.rate_limit_write_per_minute,
+                60.0,
+            )
+        client = self.client_address[0]
+        allowed, retry = self.limiter.check((client, kind), capacity, window)
+        if not allowed:
+            error = TooManyRequests(
+                f"rate limit exceeded for {kind} requests; retry after {retry}s"
+            )
+            error.retry_after = retry
+            raise error
+
+    def _check_auth(self) -> None:
+        token = self.settings.auth_token
+        if not token:
+            return
+        header = self.headers.get("authorization") or ""
+        scheme, _, supplied = header.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            raise Unauthorized("a bearer token is required for /api/*")
+        if not hmac.compare_digest(supplied.strip().encode(), token.encode()):
+            raise Unauthorized("invalid bearer token")
+
     def _read_json(self) -> dict:
-        length = int(self.headers.get("content-length") or 0)
-        if length > MAX_BODY:
-            raise ServiceError("request body too large")
+        transfer = (self.headers.get("transfer-encoding") or "").lower()
+        if transfer and transfer != "identity":
+            raise ServiceError("chunked request bodies are not supported")
+        raw_length = self.headers.get("content-length")
+        try:
+            length = int(raw_length or 0)
+        except ValueError:
+            raise ServiceError("invalid Content-Length header") from None
+        if length < 0:
+            raise ServiceError("invalid Content-Length header")
+        if length > self.settings.max_body_bytes:
+            raise PayloadTooLarge(
+                f"request body {length} bytes exceeds the {self.settings.max_body_bytes}-byte limit"
+            )
+        if length and self.command in ("POST", "PATCH"):
+            content_type = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise UnsupportedMediaType("JSON routes require Content-Type: application/json")
         raw = self.rfile.read(length) if length else b"{}"
         if not raw:
             return {}
@@ -174,12 +313,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
 
-    def _send_json(self, status: int, payload: Any) -> None:
+    def _send_json(
+        self, status: int, payload: Any, *, extra_headers: dict[str, str] | None = None
+    ) -> None:
         body = json.dumps(payload, default=str).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
+        self.send_header("x-request-id", getattr(self, "request_id", "-"))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self._security_headers()
         self.end_headers()
         if getattr(self, "_head_only", False):
@@ -253,7 +397,14 @@ def _svc(handler: ApiHandler) -> PlatformService:
 
 
 def health(handler, params, query, body):
-    return {"status": "ok", "version": __version__, "read_only": handler.settings.read_only}
+    return {
+        "status": "ok",
+        "version": __version__,
+        "read_only": handler.settings.read_only,
+        "claim_handoff": handler.settings.claim_handoff,
+        "local_edits": handler.settings.local_edits,
+        "lockdown": handler.settings.lockdown,
+    }
 
 
 def config(handler, params, query, body):
@@ -262,6 +413,12 @@ def config(handler, params, query, body):
         "version": __version__,
         "read_only": settings.read_only,
         "write_enabled": settings.write_enabled,
+        "claim_handoff": settings.claim_handoff,
+        "local_edits": settings.local_edits,
+        "lockdown": settings.lockdown,
+        "auth_required": bool(settings.auth_token),
+        "rate_limit_enabled": settings.rate_limit_enabled,
+        "max_body_bytes": settings.max_body_bytes,
         "demo": settings.demo,
         "host": settings.host,
         "port": settings.port,
@@ -522,6 +679,7 @@ def create_server(
             "service": service,
             "settings": settings,
             "warnings": warnings or [],
+            "limiter": RateLimiter(),
         },
     )
     bind_port = settings.port if port is None else port
@@ -554,8 +712,10 @@ def run(settings: Settings, *, service: PlatformService | None = None) -> int:
     url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 
     print(f"idlescan {__version__}  ·  http://{url_host}:{port}")
-    printer = "read-only" if settings.read_only else "WRITE MODE ENABLED"
-    print(f"mode: {printer}   db: {settings.db_path}")
+    handoff = "enabled" if settings.claim_handoff else "disabled"
+    edits = "locked" if settings.lockdown else "allowed"
+    print(f"claim hand-off: {handoff}   local edits: {edits}   db: {settings.db_path}")
+    print(f"auth: {'bearer token required' if settings.auth_token else 'none (loopback only)'}")
     if settings.env_file:
         print(f"env:  {settings.env_file}")
     for warning in warnings:
