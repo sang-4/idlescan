@@ -152,6 +152,68 @@ class Database:
             )
         return cursor.rowcount > 0
 
+    # ------------------------------------------------------------- custom tokens
+    def add_custom_token(
+        self,
+        chain: str,
+        address: str,
+        symbol: str,
+        decimals: int,
+        *,
+        source: str = "manual",
+    ) -> dict | None:
+        """Add a custom token. Returns None if the (chain, address) already exists."""
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO custom_tokens(chain, address, symbol, decimals, added_at, source) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(chain, address) DO NOTHING",
+                (chain.lower(), address, symbol, int(decimals), now(), source),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get_custom_token(chain, address)
+
+    def remove_custom_token(self, chain: str, address: str) -> bool:
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM custom_tokens WHERE chain = ? AND address = ?",
+                (chain.lower(), address),
+            )
+        return cursor.rowcount > 0
+
+    def get_custom_token(self, chain: str, address: str) -> dict | None:
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM custom_tokens WHERE chain = ? AND address = ?",
+                (chain.lower(), address),
+            ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def list_custom_tokens(self, chain: str | None = None) -> list[dict]:
+        with self.connect() as connection:
+            if chain:
+                rows = connection.execute(
+                    "SELECT * FROM custom_tokens WHERE chain = ? ORDER BY symbol",
+                    (chain.lower(),),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM custom_tokens ORDER BY chain, symbol"
+                ).fetchall()
+        return [dict(row) for row in rows]
+
     # ------------------------------------------------------------------ jobs
     def create_job(self, job_id: str, kind: str) -> dict:
         with self.connect() as connection:

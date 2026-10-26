@@ -42,7 +42,7 @@ class CliTests(unittest.TestCase):
         self.assertTrue(all(c["rpcs"] for c in payload))
 
     def test_tokens_listing(self):
-        code, out, _ = run_cli("tokens", "--chain", "ethereum")
+        code, out, _ = run_cli("tokens", "list", "--chain", "ethereum")
         self.assertEqual(code, 0)
         self.assertIn("USDC", out)
 

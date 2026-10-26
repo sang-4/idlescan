@@ -21,7 +21,7 @@ from .report import export, render_console, render_markdown, to_dict
 from .rpc import Rpc
 from .scanner import Scanner
 from .selftest import describe_invariants, run_selftest
-from .service import PlatformService, ServiceError
+from .service import Conflict, PlatformService, ServiceError
 from .verify import verify_drops
 
 BANNER = "idlescan - airdrop research desk (read-only by default)"
@@ -102,11 +102,32 @@ def build_parser() -> argparse.ArgumentParser:
     chains.add_argument("--chains-file", type=Path)
     chains.add_argument("--json", action="store_true")
 
-    tokens = sub.add_parser("tokens", help="list configured tokens")
-    tokens.add_argument("--chain", help="only this chain")
-    tokens.add_argument("--tokens-file", type=Path)
-    tokens.add_argument("--chains-file", type=Path)
-    tokens.add_argument("--json", action="store_true")
+    tokens = sub.add_parser("tokens", help="list and manage configured tokens")
+    token_sub = tokens.add_subparsers(dest="token_command")
+    token_list = token_sub.add_parser("list", help="list curated and custom tokens")
+    token_list.add_argument("--chain", help="only this chain")
+    token_list.add_argument("--tokens-file", type=Path)
+    token_list.add_argument("--chains-file", type=Path)
+    token_list.add_argument("--json", action="store_true")
+    token_list.add_argument("--env-file", type=Path)
+    token_list.add_argument("--db", type=Path)
+
+    token_add = token_sub.add_parser("add", help="add a custom token")
+    token_add.add_argument("chain", help="chain key")
+    token_add.add_argument("address", help="token contract address (0x-prefixed)")
+    token_add.add_argument("symbol", help="token symbol")
+    token_add.add_argument("decimals", type=int, help="token decimals")
+    token_add.add_argument("--source", default="manual", help="source label (default: manual)")
+    token_add.add_argument("--json", action="store_true")
+    token_add.add_argument("--env-file", type=Path)
+    token_add.add_argument("--db", type=Path)
+
+    token_rm = token_sub.add_parser("rm", help="remove a custom token")
+    token_rm.add_argument("chain", help="chain key")
+    token_rm.add_argument("address", help="token contract address (0x-prefixed)")
+    token_rm.add_argument("--json", action="store_true")
+    token_rm.add_argument("--env-file", type=Path)
+    token_rm.add_argument("--db", type=Path)
 
     registry = sub.add_parser(
         "registry", help="validate, import and export the airdrops registry"
@@ -537,21 +558,78 @@ def cmd_chains(args: argparse.Namespace) -> int:
 
 
 def cmd_tokens(args: argparse.Namespace) -> int:
-    chains = load_chains(args.chains_file)
-    tokens = load_tokens(chains, args.tokens_file)
-    keys = [args.chain.lower()] if args.chain else sorted(tokens)
-    if args.json:
-        payload = {
-            key: [{"symbol": t.symbol, "address": t.address, "decimals": t.decimals} for t in tokens.get(key, [])]
-            for key in keys
-        }
-        print(json.dumps(payload, indent=2))
+    command = args.token_command or "list"
+    if command == "list":
+        chains = load_chains(args.chains_file)
+        tokens = load_tokens(chains, args.tokens_file)
+        # Add custom tokens from the database
+        settings = _settings(args)
+        override = getattr(args, "db", None)
+        if override:
+            settings = settings.with_overrides(db_path=override)
+        db = Database(settings.db_path)
+        custom = db.list_custom_tokens(args.chain)
+        keys = [args.chain.lower()] if args.chain else sorted(tokens)
+        if args.json:
+            payload: dict[str, list[dict]] = {}
+            for key in keys:
+                chain_tokens = [
+                    {"symbol": t.symbol, "address": t.address, "decimals": t.decimals, "custom": False}
+                    for t in tokens.get(key, [])
+                ]
+                for ct in custom:
+                    if ct["chain"] == key:
+                        chain_tokens.append(
+                            {
+                                "symbol": ct["symbol"],
+                                "address": ct["address"],
+                                "decimals": ct["decimals"],
+                                "custom": True,
+                                "source": ct["source"],
+                            }
+                        )
+                payload[key] = chain_tokens
+            print(json.dumps(payload, indent=2))
+            return 0
+        for key in keys:
+            print(f"{key}:")
+            for token in tokens.get(key, []):
+                print(f"  {token.symbol:<8} {token.decimals:>2}d  {token.address}")
+            for ct in custom:
+                if ct["chain"] == key:
+                    print(f"  {ct['symbol']:<8} {ct['decimals']:>2}d  {ct['address']}  (custom)")
         return 0
-    for key in keys:
-        print(f"{key}:")
-        for token in tokens.get(key, []):
-            print(f"  {token.symbol:<8} {token.decimals:>2}d  {token.address}")
-    return 0
+
+    if command == "add":
+        settings, service = _service(args)
+        try:
+            result = service.add_custom_token(
+                args.chain, args.address, args.symbol, args.decimals, source=args.source
+            )
+        except (ServiceError, ConfigError, Conflict) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"added custom token {args.symbol} on {args.chain}: {args.address}")
+        return 0
+
+    if command == "rm":
+        settings, service = _service(args)
+        try:
+            removed = service.remove_custom_token(args.chain, args.address)
+        except (ServiceError, ConfigError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not removed:
+            print(f"error: custom token {args.address} not found on {args.chain}", file=sys.stderr)
+            return 1
+        print(f"removed custom token {args.address} on {args.chain}")
+        return 0
+
+    print(f"error: unknown token command {command!r}", file=sys.stderr)
+    return 2
 
 
 def _settings(args: argparse.Namespace):
@@ -891,10 +969,9 @@ def cmd_calendar(args: argparse.Namespace) -> int:
 
 
 def cmd_registry(args: argparse.Namespace) -> int:
-    from . import __version__
+    from .chains import DATA_DIR, load_chains
     from .registry import ConfigError, parse_registry
     from .safe_http import FetchError, safe_fetch_json
-    from .chains import DATA_DIR, load_chains
 
     if args.registry_command == "export":
         registry_path = args.registry
@@ -937,7 +1014,7 @@ def cmd_registry(args: argparse.Namespace) -> int:
                 return 2
 
         if not isinstance(data, dict):
-            print(f"error: registry must be a JSON object", file=sys.stderr)
+            print("error: registry must be a JSON object", file=sys.stderr)
             return 2
 
         # Basic schema validation

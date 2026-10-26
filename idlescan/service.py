@@ -958,6 +958,39 @@ class PlatformService:
             },
         }
 
+    # ------------------------------------------------------------ custom tokens
+    def custom_tokens(self, chain: str | None = None) -> list[dict]:
+        return self.db.list_custom_tokens(chain)
+
+    def add_custom_token(
+        self,
+        chain: str,
+        address: str,
+        symbol: str,
+        decimals: int,
+        *,
+        source: str = "manual",
+    ) -> dict:
+        self._require_local_edits("add a custom token")
+        self._require_write_mode("add custom token")
+        self.chains.get(chain)  # raises ConfigError for unknown chain
+        result = self.db.add_custom_token(chain, address, symbol, decimals, source=source)
+        if result is None:
+            raise Conflict(
+                f"custom token {address} already tracked on {chain}"
+            )
+        self.db.log("api", "custom_token.add", f"{chain}:{address}")
+        return result
+
+    def remove_custom_token(self, chain: str, address: str) -> bool:
+        self._require_local_edits("remove a custom token")
+        self._require_write_mode("remove custom token")
+        removed = self.db.remove_custom_token(chain, address)
+        if removed:
+            self.db.log("api", "custom_token.remove", f"{chain}:{address}")
+        return removed
+
+    # ------------------------------------------------------------ wallets
     def wallet_detail(self, address: str) -> dict:
         try:
             normalised = normalise_address(address)
