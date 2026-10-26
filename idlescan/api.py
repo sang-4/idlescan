@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Settings
+from .redaction import redact_text
 from .service import (
     Conflict,
     Lockdown,
@@ -220,11 +221,13 @@ class ApiHandler(BaseHTTPRequestHandler):
         except Conflict as exc:
             self._send_json(409, {"error": str(exc), "code": "conflict"})
         except ServiceError as exc:
-            self._send_json(getattr(exc, "status", 400), {"error": str(exc)})
+            self._send_json(getattr(exc, "status", 400), {"error": redact_text(str(exc))})
         except BrokenPipeError:
             return
         except Exception as exc:  # noqa: BLE001
-            self._send_json(500, {"error": f"{exc.__class__.__name__}: {exc}"})
+            self._send_json(
+                500, {"error": redact_text(f"{exc.__class__.__name__}: {exc}")}
+            )
 
     # ------------------------------------------------------------ guard rails
     def _rate_limit(self, method: str, path: str) -> None:
@@ -404,6 +407,7 @@ def health(handler, params, query, body):
         "claim_handoff": handler.settings.claim_handoff,
         "local_edits": handler.settings.local_edits,
         "lockdown": handler.settings.lockdown,
+        "rpc": handler.service.rpc_health(),
     }
 
 

@@ -26,10 +26,11 @@ from .config import PROJECT_ROOT, Settings
 from .db import Database
 from .preflight import PreflightError, run_preflight
 from .prices import PriceOracle
+from .redaction import redact_text
 from .registry import Airdrop, ConfigError, load_registry, parse_registry
 from .report import render_markdown, to_dict
 from .safe_http import safe_fetch_json
-from .rpc import Rpc
+from .rpc import EndpointHealth, Rpc
 from .scanner import CLAIMED, ERROR, NO_ALLOCATION, UNCLAIMED, Scanner, ScanReport
 
 TX_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
@@ -44,7 +45,8 @@ def public_text(value: str) -> str:
     paths were sanitised at generation time. Scrubbing on read keeps every
     user-facing surface free of host-specific locations.
     """
-    return _ABS_PATH.sub(lambda match: match.group(1), str(value))
+    scrubbed = _ABS_PATH.sub(lambda match: match.group(1), str(value))
+    return redact_text(scrubbed)
 
 
 class ServiceError(RuntimeError):
@@ -90,6 +92,7 @@ class PlatformService:
         self.scanner_factory = scanner_factory
         self.registry_path = registry_path
         self.db = Database(settings.db_path).init()
+        self.endpoint_health = EndpointHealth()
         self._jobs: dict[str, threading.Thread] = {}
         self._job_lock = threading.RLock()
         self._check_lock = threading.Lock()
@@ -266,7 +269,7 @@ class PlatformService:
             self.registry_drops(),
             cache=Cache(),
             prices=PriceOracle(),
-            rpc_factory=self.rpc_factory or (lambda chain: Rpc(list(chain.rpcs))),
+            rpc_factory=self.rpc_factory or (lambda chain: self._new_rpc(chain)),
             verbose=progress,
             gas_buffer_pct=self.settings.gas_buffer_pct,
             http_fetch=lambda url: safe_fetch_json(
@@ -570,10 +573,23 @@ class PlatformService:
             ],
         }
 
+    def _new_rpc(self, chain, *, quorum: int | None = None) -> Rpc:
+        return Rpc(
+            self.settings.rpc_endpoints(chain),
+            quorum=quorum if quorum is not None else self.settings.rpc_quorum,
+            health=self.endpoint_health,
+            label=chain.key,
+        )
+
     def _chain_rpc(self, chain) -> Rpc:
         if self.rpc_factory:
             return self.rpc_factory(chain)
-        return Rpc(list(chain.rpcs))
+        # The highest-risk action always uses two endpoints when they exist.
+        quorum = max(2, self.settings.rpc_quorum) if len(self.settings.rpc_endpoints(chain)) >= 2 else 1
+        return self._new_rpc(chain, quorum=quorum)
+
+    def rpc_health(self) -> list[dict]:
+        return self.endpoint_health.snapshot()
 
     def _record_preflight_failure(self, row: dict, detail: str) -> None:
         self.db.add_execution(
@@ -622,7 +638,10 @@ class PlatformService:
         if not chain:
             return None
         try:
-            rpc = (self.rpc_factory or (lambda c: Rpc(list(c.rpcs), timeout=8, retries=1)))(chain)
+            rpc = (
+                self.rpc_factory
+                or (lambda c: Rpc(self.settings.rpc_endpoints(c), timeout=8, retries=1, label=c.key))
+            )(chain)
             return rpc.request("eth_getTransactionReceipt", tx_hash)
         except Exception:  # noqa: BLE001 - receipt is best-effort
             return None

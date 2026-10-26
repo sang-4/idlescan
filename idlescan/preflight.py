@@ -125,7 +125,10 @@ def _call(rpc: Rpc, to: str, data: str, *, from_address: str | None = None) -> s
     tx: dict[str, Any] = {"to": to, "data": data}
     if from_address:
         tx["from"] = from_address
-    result = rpc.request("eth_call", tx, "latest")
+    if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "request_quorum"):
+        result = rpc.request_quorum("eth_call", tx, "latest")
+    else:
+        result = rpc.request("eth_call", tx, "latest")
     if not isinstance(result, str):
         raise PreflightUnavailable("RPC returned no result for eth_call")
     return result

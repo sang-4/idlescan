@@ -261,6 +261,11 @@ class Settings:
             )
         return errors
 
+    def rpc_endpoints(self, chain) -> list[str]:
+        """Operator overrides take precedence over bundled endpoints."""
+        override = self.rpc_overrides.get(getattr(chain, "key", ""))
+        return list(override or getattr(chain, "rpcs", ()))
+
     def with_overrides(self, **kwargs) -> "Settings":
         clean = {key: value for key, value in kwargs.items() if value is not None}
         return replace(self, **clean)

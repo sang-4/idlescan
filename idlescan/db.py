@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .migrations import LATEST_SCHEMA_VERSION, apply_migrations, schema_version
+from .redaction import redact_text
 
 SCHEMA_VERSION = LATEST_SCHEMA_VERSION
 
@@ -491,7 +492,7 @@ class Database:
             connection.execute(
                 "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id, dedupe_key, tier) "
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (now(), kind, severity, title, body, wallet, drop_id, snapshot_id, key, tier),
+                (now(), kind, severity, redact_text(title), redact_text(body), wallet, drop_id, snapshot_id, key, tier),
             )
 
     def list_alerts(self, *, include_ack: bool = False, limit: int = 100) -> list[dict]:
@@ -533,7 +534,7 @@ class Database:
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO audit(created_at, actor, action, detail) VALUES(?, ?, ?, ?)",
-                (now(), actor, action, detail),
+                (now(), actor, action, redact_text(detail)),
             )
 
     def list_audit(self, limit: int = 100) -> list[dict]:

@@ -22,6 +22,7 @@ from .chains import Chain, ChainConfig, Token
 from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
 from .prices import PriceOracle, provider_id_for
+from .redaction import redact_url
 from .safe_http import FetchError, safe_fetch_json
 from .registry import Airdrop
 from .rpc import Rpc, RpcError, describe_error
@@ -239,7 +240,10 @@ class Scanner:
             return self._rpcs[chain.key]
         rpc = self.rpc_factory(chain)
         try:
-            actual = int(rpc.request("eth_chainId"), 16)
+            if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "request_quorum"):
+                actual = int(rpc.request_quorum("eth_chainId"), 16)
+            else:
+                actual = int(rpc.request("eth_chainId"), 16)
         except (RpcError, TypeError, ValueError) as exc:
             report.warnings.append(f"{chain.name}: unreachable ({describe_error(exc)})")
             raise
@@ -267,6 +271,16 @@ class Scanner:
                 report.block_numbers[chain.key] = rpc.block_number()
             except RpcError as exc:
                 report.warnings.append(f"{chain.name}: block number unavailable ({describe_error(exc)})")
+            refresh = getattr(rpc, "refresh_endpoint_health", None)
+            if callable(refresh):
+                try:
+                    for stale in refresh(chain.stale_block_seconds):
+                        report.warnings.append(
+                            f"{chain.name}: RPC {stale['url']} is stale by "
+                            f"{stale['lag_seconds']}s and was deprioritised"
+                        )
+                except RpcError:
+                    pass
 
             self._scan_balances(chain, rpc, normalised, report)
             for drop in self.drops:
@@ -511,7 +525,7 @@ class Scanner:
         root: bytes | None = None
         if drop.root_method:
             try:
-                raw = rpc.eth_call(drop.distributor, calldata(drop.root_method))
+                raw = self._call_critical(rpc, drop.distributor, calldata(drop.root_method))
                 if isinstance(raw, str) and len(raw) >= 66:
                     root = bytes.fromhex(raw[2:66])
             except RpcError as exc:
@@ -627,16 +641,16 @@ class Scanner:
             except urllib.error.HTTPError as exc:
                 if exc.code in (404, 400):
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, NO_ALLOCATION, note=f"no claim record (HTTP {exc.code})", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                        self._claim_row(drop, chain, wallet, NO_ALLOCATION, note=f"no claim record (HTTP {exc.code})", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                     )
                 else:
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, ERROR, note=f"claim API HTTP {exc.code}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                        self._claim_row(drop, chain, wallet, ERROR, note=f"claim API HTTP {exc.code}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                     )
                 continue
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"claim API failed: {describe_error(exc)}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, ERROR, note=f"claim API failed: {describe_error(exc)}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -644,7 +658,7 @@ class Scanner:
                 payload.get("claims") or payload.get("proof") or payload.get("amount")
             ):
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API returned no allocation", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API returned no allocation", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -652,16 +666,16 @@ class Scanner:
             if not isinstance(entry, dict) or wallet.lower() not in {k.lower() for k in entry}:
                 entry = {wallet: entry} if "index" in entry or "amount" in entry else entry
             try:
-                dataset = parse_dataset({"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=url)
+                dataset = parse_dataset({"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=redact_url(url))
             except ValueError as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"bad claim payload: {exc}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, ERROR, note=f"bad claim payload: {exc}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
             claim = dataset.get(wallet)
             if claim is None:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API has no entry for this address", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API has no entry for this address", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -739,6 +753,11 @@ class Scanner:
         self._leaf_modes[drop.id] = chosen
         return chosen
 
+    def _call_critical(self, rpc: Rpc, to: str, data: str) -> Any:
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            return rpc.eth_call_quorum(to, data)
+        return rpc.eth_call(to, data)
+
     def _read_claimed(
         self, rpc: Rpc, drop: Airdrop, indexes: Sequence[int | None]
     ) -> list[bool | None]:
@@ -756,7 +775,11 @@ class Scanner:
         results: list[bool | None] = [None] * len(indexes)
         if not calls:
             return results
-        for position, result in zip(slots, rpc.batch(calls)):
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            values = [self._call_critical(rpc, drop.distributor, call[1][0]["data"]) for call in calls]
+        else:
+            values = rpc.batch(calls)
+        for position, result in zip(slots, values):
             if isinstance(result, str) and len(result) >= 66:
                 results[position] = int(result[2:66], 16) != 0
         return results
@@ -799,7 +822,13 @@ class Scanner:
         except (AbiError, ValueError) as exc:
             report.warnings.append(f"{drop.name}: bad eligibility method {eligibility.method!r}: {exc}")
             return
-        allocations = rpc.batch(alloc_calls)
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            allocations = [
+                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
+                for call in alloc_calls
+            ]
+        else:
+            allocations = rpc.batch(alloc_calls)
 
         eligible = [
             (wallet, _decode_uint(result))
@@ -814,7 +843,13 @@ class Scanner:
         except (AbiError, ValueError) as exc:
             report.warnings.append(f"{drop.name}: bad claimed method {drop.claimed_method!r}: {exc}")
             return
-        claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
+        if claimed_calls and getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            claimed_values = [
+                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
+                for call in claimed_calls
+            ]
+        else:
+            claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
 
         claimed_by_wallet: dict[str, bool | None] = {}
         for wallet, value in zip([w for w, a in eligible if a], claimed_values):
