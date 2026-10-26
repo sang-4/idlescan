@@ -28,6 +28,7 @@ from .preflight import PreflightError, run_preflight
 from .prices import PriceOracle
 from .registry import Airdrop, ConfigError, load_registry, parse_registry
 from .report import render_markdown, to_dict
+from .safe_http import safe_fetch_json
 from .rpc import Rpc
 from .scanner import CLAIMED, ERROR, NO_ALLOCATION, UNCLAIMED, Scanner, ScanReport
 
@@ -251,6 +252,13 @@ class PlatformService:
             rpc_factory=self.rpc_factory or (lambda chain: Rpc(list(chain.rpcs))),
             verbose=progress,
             gas_buffer_pct=self.settings.gas_buffer_pct,
+            http_fetch=lambda url: safe_fetch_json(
+                url,
+                allow_http=self.settings.allow_http_fetch,
+                max_bytes=self.settings.max_fetch_bytes,
+                allowed_hosts=self.settings.fetch_allowed_hosts,
+                timeout=self.settings.fetch_timeout_seconds,
+            ),
         )
 
     def run_scan_sync(

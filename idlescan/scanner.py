@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import urllib.error
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from decimal import Decimal
@@ -23,6 +22,7 @@ from .chains import Chain, ChainConfig, Token
 from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
 from .prices import PriceOracle, provider_id_for
+from .safe_http import FetchError, safe_fetch_json
 from .registry import Airdrop
 from .rpc import Rpc, RpcError, describe_error
 
@@ -953,8 +953,8 @@ def _is_expired(deadline: str | None) -> bool:
 
 
 def _fetch_json(url: str) -> dict:
-    request = urllib.request.Request(
-        url, headers={"accept": "application/json", "user-agent": "idlescan/1.0"}
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode())
+    """Default dataset/claim-API fetch; callers can inject a stricter one."""
+    payload = safe_fetch_json(url)
+    if not isinstance(payload, dict):
+        raise FetchError("expected a JSON object")
+    return payload
