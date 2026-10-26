@@ -26,14 +26,10 @@ class RedactingFilter(logging.Filter):
         if record.args:
             if isinstance(record.args, dict):
                 record.args = {
-                    key: redact_text(value) if isinstance(value, str) else value
-                    for key, value in record.args.items()
+                    key: redact_text(value) if isinstance(value, str) else value for key, value in record.args.items()
                 }
             else:
-                record.args = tuple(
-                    redact_text(value) if isinstance(value, str) else value
-                    for value in record.args
-                )
+                record.args = tuple(redact_text(value) if isinstance(value, str) else value for value in record.args)
         if record.exc_info and record.exc_info[1] is not None:
             record.msg = f"{record.msg} ({record.exc_info[1].__class__.__name__})"
             record.exc_info = None
@@ -43,9 +39,7 @@ class RedactingFilter(logging.Filter):
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
-            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc)
-            .replace(microsecond=0)
-            .isoformat(),
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).replace(microsecond=0).isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
@@ -60,7 +54,11 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(
-    level: str = "INFO", fmt: str = "text", *, stream=None, force: bool = False
+    level: str = "INFO",
+    fmt: str = "text",
+    *,
+    stream: Any = None,
+    force: bool = False,
 ) -> None:
     """Configure the root logger once; safe to call from tests with ``force``."""
     global _CONFIGURED

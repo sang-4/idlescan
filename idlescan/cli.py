@@ -8,19 +8,19 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
-from .abi import normalise_address
 from . import __version__
+from .abi import normalise_address
 from .cache import Cache
-from .db import Database
-from .dataset import DatasetError, dataset_provenance, parse_dataset_file
 from .chains import ConfigError, load_chains, load_tokens
+from .config import SettingsError, load_settings
+from .dataset import DatasetError, dataset_provenance, parse_dataset_file
+from .db import Database
 from .prices import PriceOracle
 from .registry import load_registry
 from .report import export, render_console, render_markdown, to_dict
 from .rpc import Rpc
 from .scanner import Scanner
 from .selftest import describe_invariants, run_selftest
-from .config import SettingsError, load_settings
 from .service import PlatformService, ServiceError
 from .verify import verify_drops
 
@@ -74,9 +74,7 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--json", action="store_true")
     demo.add_argument("--markdown", action="store_true")
 
-    doctor = sub.add_parser(
-        "doctor", help="check configuration, database and (optionally) RPC endpoints"
-    )
+    doctor = sub.add_parser("doctor", help="check configuration, database and (optionally) RPC endpoints")
     doctor.add_argument("--online", action="store_true", help="probe configured RPC endpoints")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--env-file", type=Path)
@@ -84,9 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--chains-file", type=Path)
     doctor.add_argument("--tokens-file", type=Path)
 
-    dataset = sub.add_parser(
-        "dataset", help="validate a merkle claims file against a distributor contract"
-    )
+    dataset = sub.add_parser("dataset", help="validate a merkle claims file against a distributor contract")
     dataset.add_argument("path", type=Path, help="claims JSON to validate")
     dataset.add_argument("--distributor", required=True, help="distributor contract address")
     dataset.add_argument("--chain", required=True, help="chain key for the contract")
@@ -151,18 +147,14 @@ def build_parser() -> argparse.ArgumentParser:
     claim_list.add_argument("--env-file", type=Path)
     claim_list.add_argument("--db", type=Path)
 
-    claim_prepare = claim_sub.add_parser(
-        "prepare", help="return an unsigned claim transaction (requires write mode)"
-    )
+    claim_prepare = claim_sub.add_parser("prepare", help="return an unsigned claim transaction (requires write mode)")
     claim_prepare.add_argument("drop_id")
     claim_prepare.add_argument("wallet")
     claim_prepare.add_argument("--json", action="store_true")
     claim_prepare.add_argument("--env-file", type=Path)
     claim_prepare.add_argument("--db", type=Path)
 
-    claim_confirm = claim_sub.add_parser(
-        "confirm", help="record a submitted claim transaction (requires write mode)"
-    )
+    claim_confirm = claim_sub.add_parser("confirm", help="record a submitted claim transaction (requires write mode)")
     claim_confirm.add_argument("drop_id")
     claim_confirm.add_argument("wallet")
     claim_confirm.add_argument("tx_hash")
@@ -171,9 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     claim_confirm.add_argument("--db", type=Path)
 
     alerts = sub.add_parser("alerts", help="review alerts from the local database")
-    alerts.add_argument(
-        "--all", action="store_true", help="include acknowledged and resolved alerts"
-    )
+    alerts.add_argument("--all", action="store_true", help="include acknowledged and resolved alerts")
     alerts.add_argument("--ack", type=int, metavar="ID", help="acknowledge one alert")
     alerts.add_argument("--ack-all", action="store_true", help="acknowledge every open alert")
     alerts.add_argument("--resolve", type=int, metavar="ID", help="resolve one alert condition")
@@ -212,9 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
     db_check.add_argument("--env-file", type=Path)
     db_check.add_argument("--db", type=Path)
 
-    db_prune = db_sub.add_parser(
-        "prune", help="delete history outside retention windows (dry-run by default)"
-    )
+    db_prune = db_sub.add_parser("prune", help="delete history outside retention windows (dry-run by default)")
     db_prune.add_argument("--yes", action="store_true", help="actually delete rows")
     db_prune.add_argument("--snapshots", type=int, help="snapshots to keep (default: setting)")
     db_prune.add_argument("--alerts-days", type=int)
@@ -307,9 +295,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return 130
 
     if args.min_usd > 0:
-        report.holdings = [
-            h for h in report.holdings if h.usd_value is None or h.usd_value >= args.min_usd
-        ]
+        report.holdings = [h for h in report.holdings if h.usd_value is None or h.usd_value >= args.min_usd]
 
     if args.json:
         print(json.dumps(to_dict(report), indent=2))
@@ -390,15 +376,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     )
     if args.json:
         print(json.dumps(report, indent=2))
-        return 0 if report["ok"] else 1
-    print(f"idlescan {report['version']}  ·  {report['failures']} failure(s), "
-          f"{report['warnings']} warning(s)")
+        return 0 if report["ok"] and report["warnings"] == 0 else 1
+    print(f"idlescan {report['version']}  ·  {report['failures']} failure(s), {report['warnings']} warning(s)")
     for check in report["checks"]:
         marker = {FAIL: "FAIL", WARN: "warn", "ok": "ok  "}[check["status"]]
         print(f"  {marker}  {check['name']:<19} {check['detail']}")
         if check.get("hint") and check["status"] != "ok":
             print(f"        hint: {check['hint']}")
-    return 0 if report["ok"] else 1
+    return 0 if report["ok"] and report["warnings"] == 0 else 1
 
 
 def cmd_dataset(args: argparse.Namespace) -> int:
@@ -438,14 +423,10 @@ def cmd_dataset(args: argparse.Namespace) -> int:
     checks.append((len(dataset) > 0, f"{len(dataset)} claims parsed"))
     if dataset.root and root:
         label = "contract" if args.root is None else "reference root"
-        checks.append(
-            (
-                dataset.root == root,
-                f"file root matches {label}"
-                if dataset.root == root
-                else f"file root MISMATCHES {label}",
-            )
-        )
+        checks.append((
+            dataset.root == root,
+            f"file root matches {label}" if dataset.root == root else f"file root MISMATCHES {label}",
+        ))
     elif dataset.root and not root:
         checks.append((None, "contract root unavailable"))
     elif root and not dataset.root:
@@ -455,15 +436,26 @@ def cmd_dataset(args: argparse.Namespace) -> int:
     verified = failed = 0
     if root:
         mode = detect_proof_mode(dataset, root)
-        checks.append((True if mode else False, f"leaf encoding {mode[0]}{' double-hashed' if mode and mode[1] else ''}" if mode else "no leaf encoding reproduces the root"))
+        checks.append((
+            True if mode else False,
+            f"leaf encoding {mode[0]}{' double-hashed' if mode and mode[1] else ''}"
+            if mode
+            else "no leaf encoding reproduces the root",
+        ))
         if mode:
             items = list(dataset.claims.items())
             if not args.all_proofs:
                 items = items[:25]
             for account, claim in items:
                 if verify_proof(
-                    claim.index, account, claim.amount, claim.proof, root,
-                    encoding=mode[0], double_hash=mode[1], sort_pairs=dataset.sort_pairs,
+                    claim.index,
+                    account,
+                    claim.amount,
+                    claim.proof,
+                    root,
+                    encoding=mode[0],
+                    double_hash=mode[1],
+                    sort_pairs=dataset.sort_pairs,
                 ):
                     verified += 1
                 else:
@@ -471,17 +463,22 @@ def cmd_dataset(args: argparse.Namespace) -> int:
             checks.append((failed == 0, f"{verified} proofs verified, {failed} failed"))
 
     if args.json:
-        print(json.dumps({
-            "path": str(args.path),
-            "claims": len(dataset),
-            "root": "0x" + root.hex() if root else None,
-            "root_source": root_source,
-            "encoding": mode[0] if mode else None,
-            "proofs_verified": verified,
-            "proofs_failed": failed,
-            "checks": [{"ok": ok, "detail": detail} for ok, detail in checks],
-            "provenance": provenance.as_dict(),
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "path": str(args.path),
+                    "claims": len(dataset),
+                    "root": "0x" + root.hex() if root else None,
+                    "root_source": root_source,
+                    "encoding": mode[0] if mode else None,
+                    "proofs_verified": verified,
+                    "proofs_failed": failed,
+                    "checks": [{"ok": ok, "detail": detail} for ok, detail in checks],
+                    "provenance": provenance.as_dict(),
+                },
+                indent=2,
+            )
+        )
     else:
         print(f"{args.path}: {len(dataset)} claims")
         print(f"sha256: {provenance.sha256}  ({provenance.byte_size:,} bytes)")
@@ -525,10 +522,7 @@ def cmd_tokens(args: argparse.Namespace) -> int:
     keys = [args.chain.lower()] if args.chain else sorted(tokens)
     if args.json:
         payload = {
-            key: [
-                {"symbol": t.symbol, "address": t.address, "decimals": t.decimals}
-                for t in tokens.get(key, [])
-            ]
+            key: [{"symbol": t.symbol, "address": t.address, "decimals": t.decimals} for t in tokens.get(key, [])]
             for key in keys
         }
         print(json.dumps(payload, indent=2))
@@ -745,7 +739,9 @@ def cmd_claims(args: argparse.Namespace) -> int:
             print("no claim positions match")
             return 0
         print(f"snapshot #{snapshot['id']} · {snapshot['created_at']}")
-        print(f"{'DROP':<18} {'WALLET':<14} {'STATUS':<13} {'VALUE':>11} {'GAS':>9} {'NET':>11} {'DEADLINE':<12} PROOF")
+        print(
+            f"{'DROP':<18} {'WALLET':<14} {'STATUS':<13} {'VALUE':>11} {'GAS':>9} {'NET':>11} {'DEADLINE':<12} PROOF"
+        )
         for row in rows:
             proof = {1: "verified", 0: "MISMATCH"}.get(row["proof_verified"], "unverified")
             deadline = (row["deadline"] or "-")[:10]
@@ -770,7 +766,9 @@ def cmd_claims(args: argparse.Namespace) -> int:
         tx = result["transaction"]
         print(f"unsigned claim for {claim['name']} on {claim['chain']}")
         print(f"  amount   {claim['amount']} raw (decimals {claim['decimals']})")
-        print(f"  value    {_money(claim['usd_value'])} gross · {_money(claim['gas_usd'])} gas · {_money(claim['net_usd'])} net")
+        print(
+            f"  value    {_money(claim['usd_value'])} gross · {_money(claim['gas_usd'])} gas · {_money(claim['net_usd'])} net"
+        )
         print(f"  from     {tx['from']}")
         print(f"  to       {tx['to']}")
         print(f"  chainId  {tx['chainId']}")
@@ -782,9 +780,7 @@ def cmd_claims(args: argparse.Namespace) -> int:
         return 0
     if command == "confirm":
         try:
-            result = service.confirm_claim(
-                drop_id=args.drop_id, wallet=args.wallet, tx_hash=args.tx_hash
-            )
+            result = service.confirm_claim(drop_id=args.drop_id, wallet=args.wallet, tx_hash=args.tx_hash)
         except ServiceError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -915,9 +911,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         after = db.status()
         backup = None
         if before["schema_version"]:
-            candidate = settings.db_path.with_name(
-                f"{settings.db_path.name}.pre-v{before['schema_version']}.bak"
-            )
+            candidate = settings.db_path.with_name(f"{settings.db_path.name}.pre-v{before['schema_version']}.bak")
             if candidate.is_file():
                 backup = str(candidate)
         payload = {
@@ -946,10 +940,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         if args.json:
             print(json.dumps(payload, indent=2))
         elif payload["ok"]:
-            print(
-                f"ok: {payload['checks']['counts']} "
-                f"schema v{payload['schema_version']}"
-            )
+            print(f"ok: {payload['checks']['counts']} schema v{payload['schema_version']}")
         else:
             print("database check found problems:", file=sys.stderr)
             for problem in payload["problems"]:
@@ -957,6 +948,7 @@ def cmd_db(args: argparse.Namespace) -> int:
         return 0 if payload["ok"] else 1
 
     if args.db_command == "prune":
+
         def choose(value, setting):
             return setting if value is None else value
 

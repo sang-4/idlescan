@@ -15,7 +15,7 @@ from idlescan.gas import (
     quote_fees,
 )
 from idlescan.rpc import RpcError
-from idlescan.scanner import ClaimCheck, UNCLAIMED
+from idlescan.scanner import UNCLAIMED, ClaimCheck
 from idlescan.selftest import DISTRIBUTOR, MockRpc, build_world
 
 DATA = "0x" + "ab" * 4

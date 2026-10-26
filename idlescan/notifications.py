@@ -12,20 +12,24 @@ no-op and no thread is started.  Outbound requests go through
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
 import time
+from collections.abc import Callable, Iterable
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from . import __version__
-from .safe_http import FetchError, safe_fetch, redact_url
+from .config import Settings
+from .safe_http import FetchError, redact_url, safe_fetch
 
 SEVERITY_ORDER = {"info": 0, "warning": 1, "critical": 2}
 MAX_ATTEMPTS = 3
 MAX_WEBHOOKS = 10
 MAX_RESPONSE_BYTES = 64 * 1024
 RETRY_BASE_SECONDS = 0.5
+WEBHOOK_ERROR_STATUS = 300
 
 
 def _now() -> str:
@@ -35,7 +39,7 @@ def _now() -> str:
 class Notifier:
     """Deliver new alerts to operator webhooks, with bounded retries."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 - configuration object with many optional knobs
         self,
         urls: Iterable[str] = (),
         *,
@@ -65,7 +69,7 @@ class Notifier:
         self._pending = 0
 
     @classmethod
-    def from_settings(cls, settings, *, db: Any = None) -> "Notifier":
+    def from_settings(cls, settings: Settings, *, db: Any = None) -> Notifier:
         return cls(
             settings.notify_webhook_urls,
             db=db,
@@ -79,13 +83,13 @@ class Notifier:
     def enabled(self) -> bool:
         return bool(self.urls)
 
-    def wanted(self, alert: dict) -> bool:
+    def wanted(self, alert: dict[str, Any]) -> bool:
         threshold = SEVERITY_ORDER.get(str(alert.get("severity", "info")), 0)
         if threshold < SEVERITY_ORDER[self.min_severity]:
             return False
         return not self.kinds or str(alert.get("kind", "")) in self.kinds
 
-    def dispatch(self, alerts: Iterable[dict]) -> None:
+    def dispatch(self, alerts: Iterable[dict[str, Any]]) -> None:
         """Queue new alerts without blocking the caller."""
         selected = [alert for alert in alerts if self.wanted(alert)]
         if not selected or not self.enabled:
@@ -101,9 +105,9 @@ class Notifier:
         )
         thread.start()
 
-    def deliver(self, alerts: list[dict]) -> int:
+    def deliver(self, alerts: list[dict[str, Any]]) -> int:
         """Send alerts now; returns the number of successful webhook calls."""
-        units: list[dict]
+        units: list[dict[str, Any]]
         if self.digest:
             units = [{"event": "digest", "alerts": alerts}]
         else:
@@ -116,7 +120,7 @@ class Notifier:
         return delivered
 
     # ------------------------------------------------------------- internals
-    def _payload(self, unit: dict) -> dict:
+    def _payload(self, unit: dict[str, Any]) -> dict[str, Any]:
         return {
             "source": "idlescan",
             "version": __version__,
@@ -153,11 +157,11 @@ class Notifier:
             timeout=self.timeout,
             content_types=None,
         )
-        if response.status >= 300:
-            raise FetchError(f"webhook returned HTTP {response.status}")
+        if response.status >= WEBHOOK_ERROR_STATUS:
+            raise FetchError(f"webhook returned HTTP {response.status}")  # noqa: TRY003
         return response.status
 
-    def _deliver_one(self, url: str, unit: dict) -> bool:
+    def _deliver_one(self, url: str, unit: dict[str, Any]) -> bool:
         payload = json.dumps(self._payload(unit), default=str).encode()
         first = unit["alerts"][0] if unit["alerts"] else {}
         notification_id = None
@@ -168,7 +172,7 @@ class Notifier:
                     kind=str(first.get("kind") or unit["event"]),
                     url_redacted=redact_url(url),
                 )
-            except Exception:  # noqa: BLE001 - delivery must not break a scan
+            except Exception:  # delivery must not break a scan
                 notification_id = None
         with self._lock:
             self._pending += 1
@@ -176,7 +180,7 @@ class Notifier:
             for attempt in range(1, self.max_attempts + 1):
                 try:
                     self._send(url, payload)
-                except Exception as exc:  # noqa: BLE001 - every failure is recorded
+                except Exception as exc:  # every failure is recorded
                     final = attempt >= self.max_attempts
                     error = f"{exc.__class__.__name__}: {exc}"
                     if notification_id is not None:
@@ -192,20 +196,16 @@ class Notifier:
                     self._sleep(min(RETRY_BASE_SECONDS * (2 ** (attempt - 1)), 5.0))
                     continue
                 if notification_id is not None:
-                    self._safe_update(
-                        notification_id, status="sent", attempts=attempt, error=None
-                    )
+                    self._safe_update(notification_id, status="sent", attempts=attempt, error=None)
                 return True
             return False
         finally:
             with self._lock:
                 self._pending = max(0, self._pending - 1)
 
-    def _safe_update(self, notification_id: int, **fields) -> None:
-        try:
+    def _safe_update(self, notification_id: int, **fields: Any) -> None:
+        with contextlib.suppress(Exception):
             self.db.update_notification(notification_id, **fields)
-        except Exception:  # noqa: BLE001 - bookkeeping is best effort
-            pass
 
     def pending(self) -> int:
         with self._lock:

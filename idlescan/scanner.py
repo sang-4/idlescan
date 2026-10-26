@@ -11,8 +11,8 @@ from __future__ import annotations
 import datetime as dt
 import urllib.error
 from dataclasses import dataclass, field
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .abi import AbiError, calldata, decode_one, normalise_address
@@ -25,13 +25,13 @@ from .dataset import (
     is_stale,
     parse_dataset_file,
 )
-from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
+from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .prices import PriceOracle, provider_id_for
 from .redaction import redact_url
-from .safe_http import FetchError, safe_fetch_json
 from .registry import Airdrop
 from .rpc import Rpc, RpcError, describe_error
+from .safe_http import FetchError, safe_fetch_json
 
 META_TTL = 30 * 24 * 3600
 
@@ -606,7 +606,7 @@ class Scanner:
         indexes = [dataset.get(wallet) for wallet in wallets]
         claimed_flags = self._read_claimed(rpc, drop, [c.index if c else None for c in indexes])
 
-        for wallet, claim, claimed in zip(wallets, indexes, claimed_flags):
+        for wallet, claim, claimed in zip(wallets, indexes, claimed_flags, strict=False):
             if claim is None:
                 report.claims.append(
                     self._claim_row(
@@ -817,7 +817,7 @@ class Scanner:
             values = [self._call_critical(rpc, drop.distributor, call[1][0]["data"]) for call in calls]
         else:
             values = rpc.batch(calls)
-        for position, result in zip(slots, values):
+        for position, result in zip(slots, values, strict=False):
             if isinstance(result, str) and len(result) >= 66:
                 results[position] = int(result[2:66], 16) != 0
         return results
@@ -870,7 +870,7 @@ class Scanner:
 
         eligible = [
             (wallet, _decode_uint(result))
-            for wallet, result in zip(wallets, allocations)
+            for wallet, result in zip(wallets, allocations, strict=False)
         ]
         try:
             claimed_calls = [
@@ -890,7 +890,7 @@ class Scanner:
             claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
 
         claimed_by_wallet: dict[str, bool | None] = {}
-        for wallet, value in zip([w for w, a in eligible if a], claimed_values):
+        for wallet, value in zip([w for w, a in eligible if a], claimed_values, strict=False):
             claimed_by_wallet[wallet] = _decode_bool(value)
 
         for wallet, amount in eligible:

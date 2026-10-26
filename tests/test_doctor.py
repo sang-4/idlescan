@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -18,10 +19,22 @@ from idlescan.migrations import LATEST_SCHEMA_VERSION, SCHEMA_V1
 from idlescan.registry import Airdrop, Eligibility
 
 
-def run_cli(*argv):
+def run_cli(*argv, env=None):
     out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        code = main(list(argv))
+    old_env = {}
+    if env:
+        for key, value in env.items():
+            old_env[key] = os.environ.get(key)
+            os.environ[key] = value
+    try:
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = main(list(argv))
+    finally:
+        for key, value in old_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
     return code, out.getvalue(), err.getvalue()
 
 
@@ -72,18 +85,14 @@ class DoctorTests(unittest.TestCase):
 
     def test_offline_never_touches_the_network(self):
         Database(self.path).init()
-        with mock.patch(
-            "idlescan.rpc.Rpc.block_number", side_effect=AssertionError("network used")
-        ):
+        with mock.patch("idlescan.rpc.Rpc.block_number", side_effect=AssertionError("network used")):
             report = run_doctor(self.settings())
         self.assertTrue(report["ok"])
         self.assertIn("no RPC or HTTP request", by_name(report)["network"]["detail"])
 
     def test_online_probes_rpc_endpoints(self):
         Database(self.path).init()
-        with mock.patch(
-            "idlescan.rpc.Rpc.block_number", return_value=19_000_000
-        ) as probe:
+        with mock.patch("idlescan.rpc.Rpc.block_number", return_value=19_000_000) as probe:
             report = run_doctor(self.settings(), online=True)
         self.assertTrue(probe.called)
         checks = by_name(report)
@@ -157,7 +166,8 @@ class DoctorTests(unittest.TestCase):
         Database(self.path).init()
         with Database(self.path).connect() as connection:
             connection.execute(
-                "INSERT INTO claims(snapshot_id, drop_id, name, chain, wallet, distributor, status) "
+                "INSERT INTO claims(snapshot_id, drop_id, name, chain, wallet, "
+                "distributor, status) "
                 "VALUES(999, 'x', 'X', 'ethereum', ?, ?, 'unclaimed')",
                 ("0x" + "11" * 20, "0x" + "22" * 20),
             )
@@ -180,9 +190,7 @@ class DoctorTests(unittest.TestCase):
             chain="ethereum",
             distributor="0x" + "dd" * 20,
             token=None,
-            eligibility=Eligibility(
-                type="merkle_dataset", dataset=str(self.root / "missing.json")
-            ),
+            eligibility=Eligibility(type="merkle_dataset", dataset=str(self.root / "missing.json")),
         )
         with mock.patch("idlescan.doctor.load_registry", return_value=[drop]):
             checks = _registry_checks(self.settings(), object())
@@ -239,18 +247,31 @@ class DoctorCliTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def test_json_output_and_exit_code(self):
-        code, out, _ = run_cli("doctor", "--json", "--db", str(self.path))
-        self.assertEqual(code, 0)
+        code, out, _ = run_cli(
+            "doctor",
+            "--json",
+            "--db",
+            str(self.path),
+            env={"IDLESCAN_READ_ONLY": "true"},
+        )
+        # A fresh deployment has a missing-dataset warning, so exit 1.
+        self.assertEqual(code, 1)
         payload = json.loads(out)
         self.assertTrue(payload["ok"])
+        self.assertEqual(payload["warnings"], 1)
         self.assertEqual(payload["version"], "1.1.0")
 
     def test_text_output_lists_checks(self):
-        code, out, _ = run_cli("doctor", "--db", str(self.path))
-        self.assertEqual(code, 0)
+        code, out, _ = run_cli(
+            "doctor",
+            "--db",
+            str(self.path),
+            env={"IDLESCAN_READ_ONLY": "true"},
+        )
+        self.assertEqual(code, 1)
         self.assertIn("database", out)
         self.assertIn("imports", out)
-        self.assertIn("failure(s)", out)
+        self.assertIn("warning(s)", out)
 
     def test_newer_schema_exits_non_zero(self):
         newer = Path(self._tmp.name) / "newer.db"
@@ -261,9 +282,7 @@ class DoctorCliTests(unittest.TestCase):
         self.assertIn("newer", out)
 
     def test_missing_env_file_is_a_usage_error(self):
-        code, _, err = run_cli(
-            "doctor", "--env-file", str(Path(self._tmp.name) / "nope.env")
-        )
+        code, _, err = run_cli("doctor", "--env-file", str(Path(self._tmp.name) / "nope.env"))
         self.assertEqual(code, 2)
         self.assertIn("not found", err)
 

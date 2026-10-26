@@ -24,9 +24,7 @@ RPC_SECRET = "https://user:pass@rpc.example.org/v1/KEY?token=RPC-SECRET"
 class MetricPathTests(unittest.TestCase):
     def test_wallet_addresses_are_placeholders(self):
         address = "0x" + "ab" * 20
-        self.assertEqual(
-            metric_path(f"/api/wallets/{address}"), "/api/wallets/:address"
-        )
+        self.assertEqual(metric_path(f"/api/wallets/{address}"), "/api/wallets/:address")
 
     def test_numeric_ids_are_placeholders(self):
         self.assertEqual(metric_path("/api/alerts/42/ack"), "/api/alerts/:id/ack")
@@ -95,17 +93,11 @@ class ObservabilityApiTests(unittest.TestCase):
             demo=True,
             auth_token=self.token,
         )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.seed_demo()
-        self.server = create_server(
-            self.service, self.settings, warnings=self.settings.validate()
-        )
+        self.server = create_server(self.service, self.settings, warnings=self.settings.validate())
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -155,7 +147,10 @@ class ObservabilityApiTests(unittest.TestCase):
         _, payload = self.request("/api/health")
         self.assertEqual(payload["status"], "ok")
         self.assertTrue(payload["database"]["up_to_date"])
-        self.assertEqual(payload["database"]["schema_version"], payload["database"]["latest_schema_version"])
+        self.assertEqual(
+            payload["database"]["schema_version"],
+            payload["database"]["latest_schema_version"],
+        )
         self.assertIn("requests", payload)
         self.assertIn("uptime_seconds", payload)
 
@@ -215,9 +210,7 @@ class LoggingTests(unittest.TestCase):
         self.assertEqual(json.loads(output)["message"], "webhook https://rpc.example.org/v1/KEY")
 
     def test_filter_scrubs_exception_text(self):
-        record = logging.LogRecord(
-            "idlescan.test", logging.ERROR, __file__, 1, "failed: %s", (RPC_SECRET,), None
-        )
+        record = logging.LogRecord("idlescan.test", logging.ERROR, __file__, 1, "failed: %s", (RPC_SECRET,), None)
         RedactingFilter().filter(record)
         self.assertNotIn("RPC-SECRET", record.getMessage())
 
@@ -235,13 +228,9 @@ class LoggingTests(unittest.TestCase):
         self.assertNotIn("RPC-SECRET", record.getMessage())
 
     def test_json_formatter_has_stable_fields(self):
-        record = logging.LogRecord(
-            "idlescan.test", logging.INFO, __file__, 1, "hello", (), None
-        )
+        record = logging.LogRecord("idlescan.test", logging.INFO, __file__, 1, "hello", (), None)
         payload = json.loads(JsonFormatter().format(record))
-        self.assertEqual(
-            list(payload), ["ts", "level", "logger", "message"]
-        )
+        self.assertEqual(list(payload), ["ts", "level", "logger", "message"])
 
     def test_configure_is_idempotent_unless_forced(self):
         configure_logging("INFO", "text", stream=self.stream, force=True)

@@ -68,7 +68,7 @@ def decode_claim_call(drop: Airdrop, data: str) -> dict[str, Any]:
         "proof": None,
     }
     uint_count = 0
-    for type_name, value in zip(types, values):
+    for type_name, value in zip(types, values, strict=False):
         rendered: Any = value
         if type_name == "address":
             summary["account"] = str(value).lower()

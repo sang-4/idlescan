@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from .abi import normalise_address
-from .merkle import Claim, ClaimDataset, parse_amount, _proof_bytes
+from .merkle import Claim, ClaimDataset, _proof_bytes, parse_amount
 
 STREAM_THRESHOLD_BYTES = 8 * 1024 * 1024
 MAX_DATASET_BYTES = 512 * 1024 * 1024

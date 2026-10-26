@@ -30,8 +30,8 @@ from .prices import PriceOracle
 from .redaction import redact_text
 from .registry import Airdrop, ConfigError, load_registry, parse_registry
 from .report import render_markdown, to_dict
-from .safe_http import safe_fetch_json
 from .rpc import EndpointHealth, Rpc
+from .safe_http import safe_fetch_json
 from .scanner import CLAIMED, ERROR, NO_ALLOCATION, UNCLAIMED, Scanner, ScanReport
 
 TX_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")

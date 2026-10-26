@@ -23,7 +23,7 @@ from idlescan.dataset import (
 from idlescan.db import Database
 from idlescan.merkle import build_proof, compute_root, leaf_hash, parse_dataset
 from idlescan.registry import Airdrop, Eligibility
-from idlescan.scanner import ScanReport, Scanner
+from idlescan.scanner import Scanner, ScanReport
 
 WALLET_A = "0x" + "11" * 20
 WALLET_B = "0x" + "22" * 20

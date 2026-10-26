@@ -186,8 +186,7 @@ def _registry_checks(settings: Settings, chains: Any) -> list[Check]:
                 "datasets",
                 WARN,
                 f"stale dataset file(s): {', '.join(sorted(set(stale)))}",
-                f"Re-check the source; the threshold is IDLESCAN_DATASET_STALE_DAYS="
-                f"{settings.dataset_stale_days}.",
+                f"Re-check the source; the threshold is IDLESCAN_DATASET_STALE_DAYS={settings.dataset_stale_days}.",
             )
         )
     if not missing and not stale:
@@ -237,8 +236,7 @@ def _database_checks(settings: Settings) -> list[Check]:
         Check(
             "database-integrity",
             FAIL if broken else OK,
-            f"failed: {', '.join(broken)}; "
-            + "; ".join(result["problems"][:5])
+            f"failed: {', '.join(broken)}; " + "; ".join(result["problems"][:5])
             if broken
             else "integrity and consistency checks passed",
             "Run `idlescan db check --json` for the full list.",
@@ -252,7 +250,7 @@ def _import_checks() -> list[Check]:
     for module in CORE_MODULES:
         try:
             importlib.import_module(module)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:  # import failures are reported, not raised
             failures.append(f"{module}: {exc.__class__.__name__}")
     if failures:
         return [Check("imports", FAIL, "; ".join(failures), "Reinstall idlescan.")]
@@ -278,9 +276,7 @@ def _online_checks(settings: Settings, chains: Any) -> list[Check]:
                 )
             )
         else:
-            checks.append(
-                Check(f"rpc:{chain.key}", OK, f"block {block} across {len(urls)} endpoint(s)")
-            )
+            checks.append(Check(f"rpc:{chain.key}", OK, f"block {block} across {len(urls)} endpoint(s)"))
     return checks
 
 

@@ -5,11 +5,11 @@ import io
 import json
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 import urllib.error
 import urllib.request
-import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -34,7 +34,7 @@ def run_cli(*argv):
     return code, out.getvalue(), err.getvalue()
 
 
-def claim_payload(
+def claim_payload(  # noqa: PLR0913 - test helper with many optional fields
     *,
     wallet=WALLET,
     status="unclaimed",
@@ -75,7 +75,7 @@ class AlertDatabaseTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def add(self, **overrides):
-        values = dict(
+        values = dict(  # noqa: C408 - test helper, keyword args are intentional
             kind="deadline",
             severity="warning",
             title="Due",
@@ -154,9 +154,7 @@ class AlertDatabaseTests(unittest.TestCase):
         notification = self.db.add_notification(
             alert_id=alert_id, kind="deadline", url_redacted="https://hooks.example/x"
         )
-        self.db.update_notification(
-            notification, status="sent", attempts=2, error=None
-        )
+        self.db.update_notification(notification, status="sent", attempts=2, error=None)
         rows = self.db.list_notifications()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "sent")
@@ -188,7 +186,7 @@ class NotifierTests(unittest.TestCase):
         return values
 
     def notifier(self, sender, **overrides):
-        values = dict(
+        values = dict(  # noqa: C408 - test helper, keyword args are intentional
             urls=["https://hooks.example/idlescan?token=SECRET"],
             db=self.db,
             sender=sender,
@@ -246,8 +244,8 @@ class NotifierTests(unittest.TestCase):
 
         def sender(url, body, timeout):
             attempts.append(body)
-            if len(attempts) < 3:
-                raise OSError("connection refused")
+            if len(attempts) < 3:  # noqa: PLR2004 - test asserts exactly 3 attempts
+                raise OSError("connection refused")  # noqa: TRY003
             return 204
 
         notifier = self.notifier(sender, max_attempts=3)
@@ -260,7 +258,9 @@ class NotifierTests(unittest.TestCase):
 
     def test_exhausted_retries_become_a_dead_letter_without_leaking_secrets(self):
         def sender(url, body, timeout):
-            raise OSError("failed posting to https://hooks.example/x?token=SECRET")
+            raise OSError(  # noqa: TRY003
+                "failed posting to https://hooks.example/x?token=SECRET"
+            )
 
         notifier = self.notifier(sender, max_attempts=2)
         notifier.dispatch([self.alert()])
@@ -277,9 +277,7 @@ class NotifierTests(unittest.TestCase):
             lambda url, body, timeout: calls.append(json.loads(body)) or 200,
             digest=True,
         )
-        notifier.dispatch(
-            [self.alert(id=1), self.alert(id=2, title="Second", severity="critical")]
-        )
+        notifier.dispatch([self.alert(id=1), self.alert(id=2, title="Second", severity="critical")])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["event"], "digest")
         self.assertEqual(len(calls[0]["alerts"]), 2)
@@ -313,12 +311,8 @@ class NotifierTests(unittest.TestCase):
 class ScanAlertTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.settings = Settings(
-            db_path=Path(self._tmp.name) / "idlescan.db", demo=True
-        )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.settings = Settings(db_path=Path(self._tmp.name) / "idlescan.db", demo=True)
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.notifier = Notifier()  # never touch the network in this suite
 
     def tearDown(self):
@@ -349,17 +343,13 @@ class ScanAlertTests(unittest.TestCase):
         # below gas + 14-day deadline + the bundled registry's missing dataset
         self.assertEqual(self.generate(), 3)
         self.assertEqual(self.generate(), 0)
-        titles = [
-            row["title"] for row in self.service.alerts() if row["drop_id"] == DROP
-        ]
+        titles = [row["title"] for row in self.service.alerts() if row["drop_id"] == DROP]
         self.assertEqual(
             sorted(titles),
-            sorted(
-                [
-                    "Demo Drop costs more gas than it is worth",
-                    "Demo Drop claim window closing",
-                ]
-            ),
+            sorted([
+                "Demo Drop costs more gas than it is worth",
+                "Demo Drop claim window closing",
+            ]),
         )
 
     def test_deadline_escalates_and_resolves_the_previous_tier(self):
@@ -379,9 +369,7 @@ class ScanAlertTests(unittest.TestCase):
         self.generate()
         created = self.generate(status="claimed", net_usd=None, deadline_days=None)
         self.assertEqual(created, 1)
-        open_alerts = [
-            row for row in self.service.alerts() if row["drop_id"] == DROP
-        ]
+        open_alerts = [row for row in self.service.alerts() if row["drop_id"] == DROP]
         self.assertEqual([row["kind"] for row in open_alerts], ["claimed"])
         history = self.service.alerts(include_ack=True)
         resolved_kinds = {row["kind"] for row in history if row["resolved_at"]}
@@ -411,17 +399,11 @@ class ScanAlertTests(unittest.TestCase):
 
     def test_invalid_proof_alert_is_critical_and_clears_when_fixed(self):
         self.generate(proof_verified=False)
-        proof = [
-            row
-            for row in self.service.alerts()
-            if row["kind"] == "invalid_proof"
-        ]
+        proof = [row for row in self.service.alerts() if row["kind"] == "invalid_proof"]
         self.assertEqual(len(proof), 1)
         self.assertEqual(proof[0]["severity"], "critical")
         self.generate(proof_verified=True)
-        self.assertFalse(
-            [row for row in self.service.alerts() if row["kind"] == "invalid_proof"]
-        )
+        self.assertFalse([row for row in self.service.alerts() if row["kind"] == "invalid_proof"])
 
     def test_new_alerts_are_dispatched_to_the_notifier(self):
         calls = []
@@ -446,9 +428,7 @@ class NotificationServiceTests(unittest.TestCase):
             notify_webhook_urls=["https://hooks.example/idlescan"],
             notify_min_severity="warning",
         )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.sent = []
 
         def sender(url, body, timeout):
@@ -475,9 +455,7 @@ class NotificationServiceTests(unittest.TestCase):
             "holdings": [],
             "totals": {},
         }
-        snapshot_id = self.service.db.save_snapshot(
-            chains=["ethereum"], wallets=[WALLET], totals={}, report=payload
-        )
+        snapshot_id = self.service.db.save_snapshot(chains=["ethereum"], wallets=[WALLET], totals={}, report=payload)
         self.service._generate_alerts(snapshot_id, payload)
         # below_gas + deadline + missing dataset, one request per alert
         self.assertEqual(len(self.sent), 3)
@@ -490,23 +468,21 @@ class NotificationServiceTests(unittest.TestCase):
 class AlertsApiTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.settings = Settings(
-            host="127.0.0.1", port=0, db_path=Path(self._tmp.name) / "api.db", demo=True
-        )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.settings = Settings(host="127.0.0.1", port=0, db_path=Path(self._tmp.name) / "api.db", demo=True)
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.notifier = Notifier()
         self.service.db.add_alert(
-            kind="deadline", severity="critical", title="Closing", body="soon",
-            wallet=WALLET, drop_id=DROP,
+            kind="deadline",
+            severity="critical",
+            title="Closing",
+            body="soon",
+            wallet=WALLET,
+            drop_id=DROP,
         )
         self.alert_id = self.service.db.list_alerts()[0]["id"]
         self.server = create_server(self.service, self.settings)
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -568,8 +544,12 @@ class AlertsCliTests(unittest.TestCase):
         self.path = Path(self._tmp.name) / "idlescan.db"
         db = Database(self.path).init()
         self.alert_id = db.add_alert(
-            kind="deadline", severity="critical", title="Closing", body="soon",
-            wallet=WALLET, drop_id=DROP,
+            kind="deadline",
+            severity="critical",
+            title="Closing",
+            body="soon",
+            wallet=WALLET,
+            drop_id=DROP,
         )
 
     def tearDown(self):

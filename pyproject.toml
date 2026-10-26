@@ -20,8 +20,40 @@ classifiers = [
 [project.scripts]
 idlescan = "idlescan.cli:main"
 
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.8",
+  "mypy>=1.11",
+  "build>=1.0",
+]
+
 [tool.setuptools.packages.find]
 include = ["idlescan*"]
 
 [tool.setuptools.package-data]
-idlescan = ["data/*.json", "data/datasets/*", "data/datasets/**/*", "web/*"]
+idlescan = ["data/*.json", "data/datasets/*", "data/datasets/**/*", "web/*", "py.typed"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 119
+
+[tool.ruff.lint]
+# Correctness-focused rules: pyflakes, syntax errors, bugbear, isort.
+# Style/modernization rules (TRY, PLR, C4, UP, SIM, RUF, E501) are not
+# enforced on pre-existing code; new files are kept clean.
+select = ["F", "E9", "B", "I"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+docstring-code-format = true
+preview = true
+
+[tool.mypy]
+python_version = 3.10
+warn_return_any = true
+warn_unused_ignores = true
+# Start lenient on pre-existing code; new modules (doctor, log, notifications,
+# dataset) are fully typed.  Tighten over time.
+disallow_untyped_defs = false
+disallow_any_generics = true
+exclude = ["build", "dist", ".eggs", "__pycache__"]
