@@ -169,6 +169,7 @@ class NotifierTests(unittest.TestCase):
         self.db = Database(Path(self._tmp.name) / "idlescan.db").init()
 
     def tearDown(self):
+        time.sleep(0.2)  # let daemon notification threads finish
         self._tmp.cleanup()
 
     def alert(self, **overrides):

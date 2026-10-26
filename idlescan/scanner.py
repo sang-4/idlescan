@@ -9,7 +9,9 @@ Read-only by construction - the only RPC methods used are ``eth_chainId``,
 from __future__ import annotations
 
 import datetime as dt
+import threading
 import urllib.error
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -188,6 +190,7 @@ class ScanReport:
     )
     price_error: str | None = None
     datasets: list[dict] = field(default_factory=list)
+    phase_timings: dict[str, float] = field(default_factory=dict)
 
     @property
     def claim_value(self) -> float | None:
@@ -226,6 +229,9 @@ class Scanner:
         gas_buffer_pct: int = 20,
         dataset_stale_days: int = 30,
         max_dataset_bytes: int = MAX_DATASET_BYTES,
+        scan_workers: int = 4,
+        timeout_seconds: int = 300,
+        cancel_event: threading.Event | None = None,
     ):
         self.chains = chains
         self.tokens = tokens
@@ -240,6 +246,9 @@ class Scanner:
         self.gas_buffer_pct = gas_buffer_pct
         self.dataset_stale_days = dataset_stale_days
         self.max_dataset_bytes = max_dataset_bytes
+        self.scan_workers = max(1, scan_workers)
+        self.timeout_seconds = timeout_seconds
+        self.cancel_event = cancel_event or threading.Event()
         self._rpcs: dict[str, Rpc] = {}
         self._datasets: dict[str, ClaimDataset | None] = {}
         self._provenance: dict[str, dict] = {}
@@ -272,17 +281,23 @@ class Scanner:
         normalised = [normalise_address(w) for w in wallets]
         chains = self.chains.resolve(chain_keys)
         report = ScanReport(wallets=normalised, chains=[c.key for c in chains])
+        start_all = dt.datetime.now(dt.timezone.utc)
 
-        for chain in chains:
-            self.verbose(f"scanning {chain.name}...")
+        def scan_chain(chain: Chain) -> None:
+            """Scan a single chain; results are merged into ``report``."""
+            chain_start = dt.datetime.now(dt.timezone.utc)
             try:
                 rpc = self._rpc(chain, report)
             except RpcError:
-                continue
+                self.verbose(f"scanning {chain.name}... unreachable")
+                return
+            self.verbose(f"scanning {chain.name}...")
             try:
                 report.block_numbers[chain.key] = rpc.block_number()
             except RpcError as exc:
-                report.warnings.append(f"{chain.name}: block number unavailable ({describe_error(exc)})")
+                report.warnings.append(
+                    f"{chain.name}: block number unavailable ({describe_error(exc)})"
+                )
             refresh = getattr(rpc, "refresh_endpoint_health", None)
             if callable(refresh):
                 try:
@@ -296,12 +311,45 @@ class Scanner:
 
             self._scan_balances(chain, rpc, normalised, report)
             for drop in self.drops:
+                if self.cancel_event.is_set():
+                    return
                 if drop.chain != chain.key or not drop.enabled:
                     continue
                 self._check_drop(chain, rpc, drop, normalised, report)
 
+            chain_end = dt.datetime.now(dt.timezone.utc)
+            report.phase_timings[f"chain:{chain.key}"] = (
+                chain_end - chain_start
+            ).total_seconds()
+
+        # Scan chains concurrently, bounded by scan_workers.  A failing chain
+        # degrades to a warning and never aborts the scan (WP-13).
+        with ThreadPoolExecutor(max_workers=self.scan_workers) as pool:
+            futures = {pool.submit(scan_chain, chain): chain for chain in chains}
+            deadline = start_all + dt.timedelta(seconds=self.timeout_seconds)
+            for future in as_completed(futures):
+                if self.cancel_event.is_set():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+                if dt.datetime.now(dt.timezone.utc) > deadline:
+                    report.warnings.append(
+                        f"scan exceeded {self.timeout_seconds}s timeout; "
+                        "partial results returned"
+                    )
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001 - chain failure degrades
+                    chain = futures[future]
+                    report.warnings.append(
+                        f"{chain.name}: scan failed ({exc.__class__.__name__})"
+                    )
+
         self._apply_prices(report)
         report.price_error = self.prices.error
+        end_all = dt.datetime.now(dt.timezone.utc)
+        report.phase_timings["total"] = (end_all - start_all).total_seconds()
         self.cache.flush()
         for dataset in self._datasets.values():
             if dataset is not None:

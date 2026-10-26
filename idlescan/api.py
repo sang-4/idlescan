@@ -704,6 +704,12 @@ def job_get(handler, params, query, body):
     return {"job": _svc(handler).job(params["job_id"])}
 
 
+def job_cancel(handler, params, query, body):
+    if not _svc(handler).cancel_scan(params["job_id"]):
+        raise NotFound(f"job {params['job_id']} not found or not running")
+    return {"cancelled": True}
+
+
 def portfolio(handler, params, query, body):
     snapshot_id = _int_query(query, "snapshot")
     return _svc(handler).portfolio(snapshot_id)
@@ -796,6 +802,7 @@ def build_router() -> Router:
     router.add("POST", r"/api/scan", scan_start)
     router.add("GET", r"/api/jobs", jobs_list)
     router.add("GET", r"/api/jobs/(?P<job_id>[\w\-]+)", job_get)
+    router.add("POST", r"/api/jobs/(?P<job_id>[\w\-]+)/cancel", job_cancel)
     router.add("GET", r"/api/search", search)
     router.add("GET", r"/api/analytics", analytics)
     router.add("POST", r"/api/check", check_address)

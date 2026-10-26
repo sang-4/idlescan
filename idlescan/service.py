@@ -13,6 +13,7 @@ import re
 import sqlite3
 import threading
 import uuid
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -87,6 +88,7 @@ class ScanRequest:
     wallets: list[str]
     chains: list[str]
     trigger: str = "manual"
+    cancel_event: threading.Event | None = None
 
 
 class PlatformService:
@@ -109,11 +111,33 @@ class PlatformService:
         self._job_lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._active_scan: str | None = None
+        self._cancel_events: dict[str, threading.Event] = {}
         self.chains: ChainConfig = load_chains()
         self.tokens: dict[str, list[Token]] = load_tokens(self.chains)
         self.seed_registry()
+        self._recover_stale_jobs()
 
     # ------------------------------------------------------------------ setup
+    def _recover_stale_jobs(self) -> None:
+        """Mark jobs left ``running`` after a restart as interrupted."""
+        with self.db.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT id FROM jobs WHERE status = 'running'"
+                ).fetchall()
+            ]
+        for row in rows:
+            self.db.update_job(
+                row["id"],
+                status="failed",
+                message="scan interrupted by restart",
+                error="interrupted",
+                finished_at=_now(),
+            )
+            self.db.log("scanner", "scan.recovered", f"job={row['id']}")
+
+    # ------------------------------------------------------------------ scans
     def seed_registry(self) -> None:
         """Copy bundled registry entries into the DB without clobbering local edits."""
         try:
@@ -204,14 +228,16 @@ class PlatformService:
         if not wallets:
             raise ServiceError("add at least one wallet before scanning")
         chains = [c for c in (chain_keys or self.settings.chains or ["all"]) if c]
+        cancel_event = threading.Event()
         with self._job_lock:
             if self._active_scan:
                 raise Conflict("a scan is already running")
             job_id = uuid.uuid4().hex[:12]
             self.db.create_job(job_id, "scan")
+            self._cancel_events[job_id] = cancel_event
             thread = threading.Thread(
                 target=self._run_scan,
-                args=(job_id, ScanRequest(wallets=wallets, chains=chains, trigger=trigger)),
+                args=(job_id, ScanRequest(wallets=wallets, chains=chains, trigger=trigger, cancel_event=cancel_event)),
                 name=f"scan-{job_id}",
                 daemon=True,
             )
@@ -220,7 +246,22 @@ class PlatformService:
             thread.start()
         return self.db.get_job(job_id)
 
+    def cancel_scan(self, job_id: str) -> bool:
+        """Request cancellation of a running scan.
+
+        Returns ``True`` if the scan was found and cancellation requested,
+        ``False`` if the job does not exist or is not running.
+        """
+        with self._job_lock:
+            if job_id not in self._cancel_events:
+                return False
+            event = self._cancel_events[job_id]
+        event.set()
+        self.db.log("scanner", "scan.cancel", f"job={job_id}")
+        return True
+
     def _run_scan(self, job_id: str, request: ScanRequest) -> None:
+        cancel_event = request.cancel_event or threading.Event()
         messages: list[str] = []
 
         def progress(message: str) -> None:
@@ -234,6 +275,8 @@ class PlatformService:
                 report = self._demo_report()
             else:
                 report = self.build_scanner(progress).scan(request.chains, request.wallets)
+            if cancel_event.is_set():
+                raise CancelledError("scan cancelled")
             _apply_min_usd(report, self.settings.min_usd)
             payload = to_dict(report)
             snapshot_id = self.db.save_snapshot(
@@ -245,21 +288,33 @@ class PlatformService:
             )
             alerts = self._generate_alerts(snapshot_id, payload)
             self._persist_datasets(payload)
+            result = {
+                "snapshot_id": snapshot_id,
+                "totals": payload["totals"],
+                "holdings": len(payload["holdings"]),
+                "claims": len(payload["claims"]),
+                "alerts": alerts,
+            }
+            if report.phase_timings:
+                result["phase_timings"] = report.phase_timings
             self.db.update_job(
                 job_id,
                 status="done",
                 progress=1.0,
                 message=f"snapshot #{snapshot_id} saved",
                 finished_at=_now(),
-                result={
-                    "snapshot_id": snapshot_id,
-                    "totals": payload["totals"],
-                    "holdings": len(payload["holdings"]),
-                    "claims": len(payload["claims"]),
-                    "alerts": alerts,
-                },
+                result=result,
             )
             self.db.log("scanner", "scan.complete", f"snapshot={snapshot_id} alerts={alerts}")
+        except CancelledError:
+            self.db.update_job(
+                job_id,
+                status="failed",
+                message="scan cancelled",
+                error="cancelled",
+                finished_at=_now(),
+            )
+            self.db.log("scanner", "scan.cancelled", f"job={job_id}")
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI
             self.db.update_job(
                 job_id,
@@ -272,6 +327,7 @@ class PlatformService:
         finally:
             with self._job_lock:
                 self._active_scan = None
+                self._cancel_events.pop(job_id, None)
 
     def build_scanner(self, progress: Callable[[str], None] | None = None) -> Scanner:
         if self.scanner_factory:
@@ -286,6 +342,8 @@ class PlatformService:
             verbose=progress,
             gas_buffer_pct=self.settings.gas_buffer_pct,
             dataset_stale_days=self.settings.dataset_stale_days,
+            scan_workers=self.settings.scan_workers,
+            timeout_seconds=self.settings.scan_timeout_seconds,
             http_fetch=lambda url: safe_fetch_json(
                 url,
                 allow_http=self.settings.allow_http_fetch,
