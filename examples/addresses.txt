@@ -1,0 +1,5 @@
+# one public address per line; comments and blank lines are ignored
+# 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045
+#
+# Only ever put public addresses here. A seed phrase or private key in this file
+# gives anyone who reads it your funds.

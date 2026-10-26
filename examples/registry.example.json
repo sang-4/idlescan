@@ -1,0 +1,57 @@
+{
+  "_comment": "TEMPLATE ONLY - replace every address and read the notes before use. Copy to my-registry.json and run: idlescan scan -f addresses.txt --registry my-registry.json",
+  "version": 1,
+  "airdrops": [
+    {
+      "id": "merkle-example",
+      "name": "Merkle dataset example",
+      "chain": "arbitrum",
+      "distributor": "0x090D4613473dEE047c3f2706764f49E0821D256e",
+      "token": "0x912CE59144191C1204E64559FE8253a0e49E6548",
+      "token_decimals": 18,
+      "eligibility": {
+        "type": "merkle_dataset",
+        "dataset": "claims.example.json",
+        "leaf_encoding": "auto",
+        "sort_pairs": true
+      },
+      "claim_method": "claim(uint256,address,uint256,bytes32[])",
+      "claimed_method": "isClaimed(uint256)",
+      "root_method": "merkleRoot()",
+      "claim_deadline": "2025-09-01T00:00:00Z",
+      "notes": "Dataset paths are relative to this registry file. 'auto' leaf encoding is detected by testing the file's proofs against merkleRoot()."
+    },
+    {
+      "id": "claim-api-example",
+      "name": "Per-address claim API example",
+      "chain": "base",
+      "distributor": "0x0000000000000000000000000000000000000001",
+      "token": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+      "token_decimals": 6,
+      "eligibility": {
+        "type": "dataset_url",
+        "url": "https://project.example/api/claims/{address}"
+      },
+      "claimed_method": "isClaimed(uint256)",
+      "root_method": "merkleRoot()",
+      "notes": "The API response must contain index/amount/proof. Proofs are verified against the on-chain root before being trusted; a 404 is treated as 'not in the list', not as an error."
+    },
+    {
+      "id": "allocation-view-example",
+      "name": "On-chain allocation view example",
+      "chain": "optimism",
+      "distributor": "0x0000000000000000000000000000000000000002",
+      "token": "0x4200000000000000000000000000000000000042",
+      "token_decimals": 18,
+      "eligibility": {
+        "type": "allocation_view",
+        "method": "allocation(address)",
+        "returns": "uint256",
+        "decimals": 18
+      },
+      "claimed_method": "claimed(address)",
+      "root_method": "",
+      "notes": "Use when the distributor stores the allocation itself. No dataset needed; root_method is disabled with an empty string."
+    }
+  ]
+}

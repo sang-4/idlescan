@@ -1,0 +1,38 @@
+{
+  "merkleRoot": "0xbc698495260207ada47a13ad42517979da06f98917f021dcd5e26e1bf5560e53",
+  "_comment": "SYNTHETIC example in merkle-distributor format. Proofs are valid for this root only; it is not any real airdrop.",
+  "claims": {
+    "0x1111111111111111111111111111111111111111": {
+      "index": 0,
+      "amount": "0x1043561a8829300000",
+      "proof": [
+        "0x25ad6edd76495226c247cff58df06cf26af1ebf35cb8c9a7f53a0aa84fd5464d",
+        "0x20ab3490b907dd8b6dff86bca4625f524f820cb12fcfbfef6b918fc88b1cb58f"
+      ]
+    },
+    "0x2222222222222222222222222222222222222222": {
+      "index": 1,
+      "amount": "0x6c6b935b8bbd40000",
+      "proof": [
+        "0x9e5160cdcdaed065ffb7b14ae8c7c0667f22751a528bed79e70a3cf353d0f4f8",
+        "0xf897320c5fa3bf397817d68c02091330e613fa9fe20b453a3cb21137d177639e"
+      ]
+    },
+    "0x4444444444444444444444444444444444444444": {
+      "index": 2,
+      "amount": "0x246ddf97976680000",
+      "proof": [
+        "0xac6df2bee1040a109cd1a81540f9db1f34ee386091ba94b00f5817290757bbb1",
+        "0xf897320c5fa3bf397817d68c02091330e613fa9fe20b453a3cb21137d177639e"
+      ]
+    },
+    "0x5555555555555555555555555555555555555555": {
+      "index": 3,
+      "amount": "0xde0b6b3a7640000",
+      "proof": [
+        "0x88249eec5ba3c752a6d8e324a4f33cde7c3f4ab5010bcf25f19c01a2af90a349",
+        "0x20ab3490b907dd8b6dff86bca4625f524f820cb12fcfbfef6b918fc88b1cb58f"
+      ]
+    }
+  }
+}

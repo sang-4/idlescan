@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idlescan"
+version = "1.1.0"
+description = "Self-hosted airdrop research desk: idle balances, unclaimed allocations and gas-adjusted claim planning (read-only by default)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "idlescan" }]
+keywords = ["ethereum", "airdrop", "portfolio", "merkle", "read-only", "self-hosted"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Topic :: Office/Business :: Financial",
+  "Environment :: Console",
+]
+
+[project.scripts]
+idlescan = "idlescan.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["idlescan*"]
+
+[tool.setuptools.package-data]
+idlescan = ["data/*.json", "data/datasets/*", "data/datasets/**/*", "web/*"]
