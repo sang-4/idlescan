@@ -303,6 +303,19 @@ def _rpc_overrides(
     return overrides
 
 
+def _default_db_path(value: str | None) -> Path:
+    """Resolve the database path without ever defaulting inside site-packages.
+
+    An explicit ``IDLESCAN_DB`` keeps its historical behaviour: relative paths
+    resolve against the project root.  With no setting at all the database lives
+    under the current working directory, so a wheel installed into a system or
+    virtual environment can still write its data.
+    """
+    if value:
+        return Path(value).expanduser()
+    return (Path.cwd() / "data" / "idlescan.db").expanduser()
+
+
 def load_settings(env_file: str | Path | None = None, *, environ: dict[str, str] | None = None) -> Settings:
     environ = dict(os.environ if environ is None else environ)
     path = find_env_file(env_file)
@@ -315,7 +328,7 @@ def load_settings(env_file: str | Path | None = None, *, environ: dict[str, str]
         read_only=_as_bool(get("IDLESCAN_READ_ONLY"), True),
         host=get("IDLESCAN_HOST", "127.0.0.1") or "127.0.0.1",
         port=_as_int(get("IDLESCAN_PORT"), 8787),
-        db_path=Path(get("IDLESCAN_DB", "data/idlescan.db") or "data/idlescan.db").expanduser(),
+        db_path=_default_db_path(get("IDLESCAN_DB")),
         chains=_as_list(get("IDLESCAN_CHAINS"), []),
         min_usd=_as_float(get("IDLESCAN_MIN_USD"), 1.0),
         refresh_minutes=_as_int(get("IDLESCAN_REFRESH_MINUTES"), 0),

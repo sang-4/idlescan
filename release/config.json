@@ -1,0 +1,12 @@
+{
+  "product_name": "idlescan Desk",
+  "version": "1.2.0",
+  "release_name": "Founding Release",
+  "seller": "Allan Kiprop",
+  "seller_url": "https://allank.dev",
+  "support_email": "support@allank.dev",
+  "price_usd": 39,
+  "list_price_usd": 49,
+  "refund_days": 14,
+  "license": "Proprietary single-user"
+}

@@ -162,6 +162,11 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError):
             load_settings("/definitely/not/here/.env", environ={})
 
+    def test_default_db_path_is_cwd_based_not_site_packages(self):
+        with patch.dict("os.environ", {}, clear=True):
+            settings = load_settings(None, environ={})
+        self.assertEqual(settings.db_path, (Path.cwd() / "data" / "idlescan.db").resolve())
+
     def test_relative_db_path_resolves_against_project_root(self):
         settings = load_settings(environ={"IDLESCAN_DB": "data/test.db"})
         self.assertEqual(settings.db_path, (PROJECT_ROOT / "data" / "test.db").resolve())

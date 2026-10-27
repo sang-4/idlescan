@@ -25,7 +25,7 @@ classifiers = [
 
 [project.urls]
 Homepage = "https://allank.dev"
-Support = "mailto:support@allank.dev"
+Support = "https://allank.dev"
 
 [project.scripts]
 idlescan = "idlescan.cli:main"

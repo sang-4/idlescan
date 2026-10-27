@@ -52,7 +52,7 @@ sources.**
 | **Check** | `#/check` or `#/check/<address>` — read-only eligibility check for any address across every enabled drop, with per-position value, gas, net, deadline and proof status. Nothing is persisted, so it doubles as a public checker when the instance is exposed |
 | **Airdrops** | Registry board with phase filters, sorting, verifiable safety score (eligibility source, proof verification, links, deadline), dataset status, per-drop unclaimed value |
 | **Airdrop profile** | `#/drop/<id>` — contract provenance with explorer links, eligibility source, proof counts, status breakdown, value history, tracked positions, executions and alerts, per-drop JSON/CSV/Markdown exports |
-| **Claims** | Profitability-ranked positions, gas-adjusted net, proof status, one-click **unsigned** transaction hand-off (write mode) |
+| **Claims** | Net-value-ranked positions, gas-adjusted net, proof status, one-click **unsigned** transaction hand-off (write mode) |
 | **Wallets** | Watch-only addresses with labels and tags, per-wallet rollups, and bulk import of up to 200 addresses (address or `address, label, tags` per line) with per-row validation |
 | **Wallet profile** | `#/wallet/<address>` — idle/unclaimed/claimed totals, allocation history, chain mix, full position and balance tables, linked executions and alerts |
 | **Alerts** | Deadline <14 days, below-gas claims, invalid proofs, new allocations, confirmed claims, missing datasets |

@@ -1,0 +1,18 @@
+include LICENSE
+include NOTICE
+include THIRD_PARTY.md
+include README.md
+include CHANGELOG.md
+include QUICKSTART.md
+include TRUST.md
+include SUPPORT.md
+include py.typed
+recursive-include idlescan/data *.json *.md
+recursive-include idlescan/web *
+prune tests
+prune release
+prune data
+prune dist
+prune examples
+prune docs
+global-exclude *.py[cod] *.db *.db-wal *.db-shm __pycache__/* .DS_Store

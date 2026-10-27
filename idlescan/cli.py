@@ -110,6 +110,14 @@ def build_parser() -> argparse.ArgumentParser:
     chains.add_argument("--json", action="store_true")
 
     tokens = sub.add_parser("tokens", help="list and manage configured tokens")
+    # Legacy v1.1 flags: `idlescan tokens --chain ethereum` must keep working
+    # without the `list` subcommand.
+    tokens.add_argument("--chain", help="only this chain")
+    tokens.add_argument("--tokens-file", type=Path)
+    tokens.add_argument("--chains-file", type=Path)
+    tokens.add_argument("--json", action="store_true")
+    tokens.add_argument("--env-file", type=Path)
+    tokens.add_argument("--db", type=Path)
     token_sub = tokens.add_subparsers(dest="token_command")
     token_list = token_sub.add_parser("list", help="list curated and custom tokens")
     token_list.add_argument("--chain", help="only this chain")

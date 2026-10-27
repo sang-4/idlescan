@@ -46,6 +46,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("USDC", out)
 
+    def test_tokens_legacy_flags_still_work_without_list_subcommand(self):
+        code, out, err = run_cli("tokens", "--chain", "ethereum", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIn("ethereum", payload)
+        self.assertTrue(all(token["address"].startswith("0x") for token in payload["ethereum"]))
+
     def test_selftest_json(self):
         code, out, _ = run_cli("selftest", "--json")
         self.assertEqual(code, 0)

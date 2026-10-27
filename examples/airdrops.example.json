@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Example registry entry for idlescan Desk.",
+    "Every address below is a placeholder, not a real contract or token.",
+    "Replace the distributor, token and dataset path with values from the project's",
+    "official documentation, then add the entry through the UI or POST /api/airdrops.",
+    "This file is documentation only: it is not loaded automatically."
+  ],
+  "version": 1,
+  "airdrops": [
+    {
+      "id": "example-project",
+      "name": "Example Project (EXAMPLE)",
+      "chain": "ethereum",
+      "distributor": "0x000000000000000000000000000000000000dEaD",
+      "token": "0x0000000000000000000000000000000000000001",
+      "token_decimals": 18,
+      "eligibility": {
+        "type": "merkle_dataset",
+        "dataset": "datasets/example-project.claims.json",
+        "leaf_encoding": "auto"
+      },
+      "claim_method": "claim(uint256,address,uint256,bytes32[])",
+      "claimed_method": "isClaimed(uint256)",
+      "root_method": "merkleRoot()",
+      "claim_deadline": "2030-12-31T23:59:59Z",
+      "notes": "PLACEHOLDER ENTRY. The distributor and token addresses above are not real contracts. Replace them before use.",
+      "links": {
+        "claim": "https://project.example/claim"
+      }
+    }
+  ]
+}
