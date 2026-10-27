@@ -61,6 +61,10 @@
 - **Licence**: MIT replaced by a proprietary single-user licence held by Allan Kiprop. Added
   `NOTICE` and `THIRD_PARTY.md`; package metadata and classifiers updated. The GPL-3.0 Uniswap
   fixture remains test-only and is excluded from distributed artefacts.
+- `idlescan --version` prints the version and exits 0.
+- The default database now lives under the current working directory when
+  `IDLESCAN_DB` is unset, instead of next to the installed package. Explicit
+  relative paths still resolve against the project root.
 - `idlescan doctor` exits 1 when there are warnings (not just failures).
 - `keccak.py` docstring test file reference corrected (`test_keccak_abi.py`).
 - `ScanReport` gains `phase_timings` and `datasets` fields.
@@ -75,6 +79,8 @@
 ### Deprecated
 
 - `IDLESCAN_READ_ONLY` remains supported as an alias for the read-only switch.
+- `idlescan tokens --chain …` (without the `list` subcommand) is supported again;
+  the v1.2 subcommand form keeps working.
 
 ### Fixed
 

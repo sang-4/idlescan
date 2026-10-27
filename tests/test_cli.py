@@ -28,6 +28,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("not a valid EVM address", err)
 
+    def test_version_flag(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertRegex(out.getvalue().strip(), r"^idlescan \d+\.\d+\.\d+$")
+
     def test_chains_listing(self):
         code, out, _ = run_cli("chains")
         self.assertEqual(code, 0)

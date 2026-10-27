@@ -58,7 +58,7 @@ def _text(data: bytes) -> str:
 
 def _scan_text(name: str, text: str, findings: list[str]) -> None:
     lowered_name = name.lower()
-    for match in PRIVATE_KEY.finditer(text):
+    for _match in PRIVATE_KEY.finditer(text):
         if lowered_name.endswith("checksums.txt"):
             continue
         findings.append(f"{name}: private-key-like 64-hex string")
@@ -69,7 +69,7 @@ def _scan_text(name: str, text: str, findings: list[str]) -> None:
             findings.append(f"{name}: unexpected email address {match.group(0)!r}")
     for match in HOME_PATH.finditer(text):
         findings.append(f"{name}: absolute home path {match.group(0)!r}")
-    for match in KEYED_URL.finditer(text):
+    for _match in KEYED_URL.finditer(text):
         findings.append(f"{name}: URL with an embedded credential")
         break
     for pattern in (QUOTED_ASSIGNMENT, ENV_SECRET):
@@ -137,16 +137,21 @@ def main(argv: list[str] | None = None) -> int:
         import shutil
 
         shutil.rmtree(extract_root)
-    with zipfile.ZipFile(archive) as zf:
-        zf.extractall(extract_root)
-    for item in sorted(extract_root.rglob("*")):
-        if not item.is_file():
-            continue
-        if item.suffix == ".whl":
-            scan_zip(item, findings)
-        elif item.suffix == ".gz" and item.name.endswith(".tar.gz"):
-            scan_tar(item, findings)
-    scan_tree(extract_root, findings)
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            zf.extractall(extract_root)
+        for item in sorted(extract_root.rglob("*")):
+            if not item.is_file():
+                continue
+            if item.suffix == ".whl":
+                scan_zip(item, findings)
+            elif item.suffix == ".gz" and item.name.endswith(".tar.gz"):
+                scan_tar(item, findings)
+        scan_tree(extract_root, findings)
+    finally:
+        import shutil
+
+        shutil.rmtree(extract_root, ignore_errors=True)
 
     if findings:
         print(f"FAIL: {len(findings)} finding(s)")

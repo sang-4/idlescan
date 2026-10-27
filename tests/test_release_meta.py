@@ -60,12 +60,13 @@ class LicenceMetadataTests(unittest.TestCase):
         self.assertIn("See LICENSE", notice)
 
     def test_no_mit_license_claims_in_shipped_docs(self):
+        stale = "mit " + "license"  # split so this assertion is not itself a hit
         for name in SHIPPED_DOCS:
             path = ROOT / name
             if not path.exists():
                 continue
             text = path.read_text().lower()
-            self.assertNotIn("mit license", text, name)
+            self.assertNotIn(stale, text, name)
             self.assertNotIn("xtanol", text, name)
 
     def test_no_banned_seller_name(self):

@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Always verify the distributor address in the project's official docs."
         ),
     )
+    parser.add_argument("--version", action="version", version=f"idlescan {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="scan wallets for idle balances and unclaimed allocations")

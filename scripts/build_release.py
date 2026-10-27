@@ -14,8 +14,8 @@ seller string is present.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -127,14 +127,12 @@ def build_artefacts(version: str) -> tuple[Path, Path]:
     if BUILD.exists():
         shutil.rmtree(BUILD)
     BUILD.mkdir(parents=True)
-    try:
-        import build  # noqa: F401
-    except ImportError:
+    if importlib.util.find_spec("build") is None:
         print("python -m build not available; using pip wheel + source tarball")
         run([sys.executable, "-m", "pip", "wheel", "--no-deps", "--wheel-dir", str(BUILD), str(ROOT)])
         wheel = next(BUILD.glob(f"idlescan-{version}-*.whl"), None)
         if wheel is None:
-            raise SystemExit("pip wheel did not produce a wheel")
+            raise SystemExit("pip wheel did not produce a wheel") from None
         sdist = _fallback_sdist(version)
         return wheel, sdist
     run([sys.executable, "-m", "build", "--wheel", "--sdist", "--outdir", str(BUILD)])

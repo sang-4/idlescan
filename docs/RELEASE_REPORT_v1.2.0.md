@@ -34,15 +34,15 @@ tooling, custom tokens, and concurrent scans with cancellation.
 
 | Metric | Before (v1.1.0) | After (v1.2.0) |
 |--------|-----------------|----------------|
-| Test count | 149 (baseline) / 260 (WP-07) | **362** |
-| Test suites | ~15 | 22 |
-| Suite runtime | <60s | ~71s |
+| Test count | 149 (baseline) | **388** (refreshed at the 1.2.0 product release) |
+| Test suites | 13 | 27 files |
+| Suite runtime | <60s | ~100-120s (offline, single core) |
 | Skipped tests | 0 | 1 (sort_pairs=False variant) |
-| API routes | 34 | **35** (+POST /api/jobs/{id}/cancel) |
-| CLI commands | 13 | **16** (+doctor, registry, tokens subcommands) |
+| API routes | 34 | **38** |
+| CLI commands | 13 | **18** (+doctor, registry, tokens, about) |
 | DB schema | v1 | **v2** |
-| Modules | 17 | **21** (+gas, preflight, safe_http, redaction, dataset, doctor, log, notifications) |
-| Lines of Python | ~12,000 | ~19,000 |
+| Modules | 17 | **29** |
+| Lines of Python (package) | ~7,000 | **11,518** |
 | Docs | README only | README + SECURITY.md + 6 docs/ docs + CONTRIBUTING.md |
 
 ## Verification Evidence

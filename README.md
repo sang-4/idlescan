@@ -468,7 +468,7 @@ If you must expose it:
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests     # 149 tests, no network required
+python3 -m unittest discover -s tests     # 388 tests, no network required
 ```
 
 The Keccak-256 implementation is checked against canonical vectors, the merkle code

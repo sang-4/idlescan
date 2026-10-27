@@ -12,3 +12,7 @@ data/
 *.db
 *.db-wal
 *.db-shm
+
+# release artefacts (rebuild with scripts/build_release.py)
+release/build/
+release/dist/
