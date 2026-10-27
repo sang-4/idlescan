@@ -85,9 +85,7 @@ def _require_address(value: Any, field_name: str) -> str:
 def _parse_eligibility(raw: dict[str, Any], where: str, *, require_dataset: bool = True) -> Eligibility:
     kind = str(raw.get("type", "")).strip()
     if kind not in ELIGIBILITY_TYPES:
-        raise ConfigError(
-            f"{where}: eligibility.type must be one of {', '.join(ELIGIBILITY_TYPES)}"
-        )
+        raise ConfigError(f"{where}: eligibility.type must be one of {', '.join(ELIGIBILITY_TYPES)}")
     encoding = str(raw.get("leaf_encoding", raw.get("leaf", "auto"))).lower()
     if encoding not in LEAF_ENCODINGS:
         raise ConfigError(f"{where}: leaf_encoding must be auto, abi or packed")
@@ -105,15 +103,11 @@ def _parse_eligibility(raw: dict[str, Any], where: str, *, require_dataset: bool
     if require_dataset and kind == "merkle_dataset" and not eligibility.dataset:
         raise ConfigError(f"{where}: merkle_dataset requires 'dataset'")
     if kind == "dataset_url" and not (eligibility.url and "{address}" in eligibility.url):
-        raise ConfigError(
-            f"{where}: dataset_url requires 'url' containing the {{address}} placeholder"
-        )
+        raise ConfigError(f"{where}: dataset_url requires 'url' containing the {{address}} placeholder")
     return eligibility
 
 
-def parse_registry(
-    data: dict[str, Any], chains: ChainConfig, *, require_dataset: bool = True
-) -> list[Airdrop]:
+def parse_registry(data: dict[str, Any], chains: ChainConfig, *, require_dataset: bool = True) -> list[Airdrop]:
     drops: list[Airdrop] = []
     seen: set[str] = set()
     for index, raw in enumerate(data.get("airdrops") or []):
@@ -149,9 +143,7 @@ def parse_registry(
                 verified_by=raw.get("verified_by"),
             )
             if raw.get("eligibility"):
-                drop.eligibility = _parse_eligibility(
-                    raw["eligibility"], where, require_dataset=require_dataset
-                )
+                drop.eligibility = _parse_eligibility(raw["eligibility"], where, require_dataset=require_dataset)
                 if drop.eligibility.is_merkle:
                     drop.claimed_method = str(raw.get("claimed_method") or "isClaimed(uint256)")
                     drop.claimed_arg = "index"
@@ -183,7 +175,5 @@ def load_registry(path: Path | str | None, chains: ChainConfig) -> list[Airdrop]
         if drop.eligibility and drop.eligibility.dataset:
             candidate = Path(drop.eligibility.dataset)
             if not candidate.is_absolute():
-                drop.eligibility.dataset = str(
-                    (target.parent / candidate).resolve()
-                )
+                drop.eligibility.dataset = str((target.parent / candidate).resolve())
     return drops

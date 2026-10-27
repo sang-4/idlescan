@@ -29,15 +29,11 @@ class E2ETests(unittest.TestCase):
             db_path=Path(self._tmp.name) / "api.db",
             demo=True,
         )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.seed_demo()
         self.server = create_server(self.service, self.settings)
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):

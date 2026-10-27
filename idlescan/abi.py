@@ -53,9 +53,7 @@ def _encode_word(type_name: str, value: Any) -> bytes:
 
     if type_name.startswith("bytes") and type_name != "bytes":
         size = int(type_name[5:])
-        raw = value if isinstance(value, (bytes, bytearray)) else bytes.fromhex(
-            str(value).removeprefix("0x")
-        )
+        raw = value if isinstance(value, (bytes, bytearray)) else bytes.fromhex(str(value).removeprefix("0x"))
         if len(raw) > size:
             raise AbiError(f"{type_name} got {len(raw)} bytes")
         return bytes(raw).ljust(WORD, b"\x00")
@@ -85,9 +83,7 @@ def encode(types: Sequence[str], values: Sequence[Any]) -> bytes:
             if element_type != "bytes32":
                 raise AbiError(f"array element type {element_type!r} not supported")
             items = list(value)
-            body = len(items).to_bytes(WORD, "big") + b"".join(
-                _encode_word("bytes32", item) for item in items
-            )
+            body = len(items).to_bytes(WORD, "big") + b"".join(_encode_word("bytes32", item) for item in items)
         body += b"\x00" * ((WORD - len(body) % WORD) % WORD)
         heads.append((head_size + sum(len(t) for t in tails)).to_bytes(WORD, "big"))
         tails.append(body)
@@ -110,9 +106,7 @@ def encode_packed(types: Sequence[str], values: Sequence[Any]) -> bytes:
             size = int(type_name[5:])
             out += word[:size]
         elif type_name.startswith("uint") or type_name.startswith("int"):
-            bits = 256 if type_name in ("uint", "int") else int(
-                "".join(ch for ch in type_name if ch.isdigit())
-            )
+            bits = 256 if type_name in ("uint", "int") else int("".join(ch for ch in type_name if ch.isdigit()))
             out += word[WORD - bits // 8 :]
         else:
             raise AbiError(f"encode_packed does not support {type_name!r}")
@@ -168,12 +162,7 @@ def decode(types: Sequence[str], data: bytes) -> list[Any]:
             out.append(raw.decode("utf-8", "replace") if type_name == "string" else raw)
         else:
             element_type = type_name[:-2]
-            out.append(
-                [
-                    _decode_static(element_type, _read_word(data, start + i * WORD))
-                    for i in range(length)
-                ]
-            )
+            out.append([_decode_static(element_type, _read_word(data, start + i * WORD)) for i in range(length)])
     return out
 
 
@@ -205,8 +194,7 @@ def checksum(address: str) -> str:
     plain = normalise_address(address)[2:]
     digest = keccak256(plain.encode()).hex()
     return "0x" + "".join(
-        ch.upper() if ch in "abcdef" and int(digest[i], 16) >= 8 else ch
-        for i, ch in enumerate(plain)
+        ch.upper() if ch in "abcdef" and int(digest[i], 16) >= 8 else ch for i, ch in enumerate(plain)
     )
 
 

@@ -104,9 +104,7 @@ class FeeQuoteTests(unittest.TestCase):
 class GasEstimateTests(unittest.TestCase):
     def test_estimate_includes_execution_cost_and_headroom(self):
         rpc = BaseRpc()
-        estimate = estimate_claim(
-            rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertEqual(estimate.gas_units, 180_000)
         self.assertEqual(estimate.gas_limit, 225_000)  # 25% headroom
         self.assertEqual(estimate.l1_fee_wei, 0)
@@ -121,9 +119,7 @@ class GasEstimateTests(unittest.TestCase):
             return hex(300_000_000_000_000)
 
         rpc._eth_call = get_l1_fee
-        estimate = estimate_claim(
-            rpc, chain(l1_fee="op_stack"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(l1_fee="op_stack"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertEqual(estimate.l1_fee_wei, 300_000_000_000_000)
         self.assertEqual(estimate.quality, PARTIAL)
         self.assertIn("GasPriceOracle", estimate.note or "")
@@ -134,9 +130,7 @@ class GasEstimateTests(unittest.TestCase):
 
     def test_unknown_l1_component_is_partial_not_precise(self):
         rpc = BaseRpc()
-        estimate = estimate_claim(
-            rpc, chain(l1_fee="unknown"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(l1_fee="unknown"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertIsNone(estimate.l1_fee_wei)
         self.assertEqual(estimate.quality, PARTIAL)
         self.assertIn("not modelled", estimate.note or "")
@@ -148,9 +142,7 @@ class GasEstimateTests(unittest.TestCase):
             raise RpcError("execution reverted")
 
         rpc._eth_call = fail
-        estimate = estimate_claim(
-            rpc, chain(l1_fee="op_stack"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(l1_fee="op_stack"), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertIsNone(estimate.l1_fee_wei)
         self.assertEqual(estimate.quality, PARTIAL)
         self.assertIn("unavailable", estimate.note or "")
@@ -158,9 +150,7 @@ class GasEstimateTests(unittest.TestCase):
     def test_estimation_failure_is_unavailable_and_cost_is_none(self):
         rpc = BaseRpc()
         rpc.overrides["eth_estimateGas"] = RpcError("execution reverted")
-        estimate = estimate_claim(
-            rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertEqual(estimate.quality, UNAVAILABLE)
         self.assertIsNone(estimate.cost_wei)
         self.assertIsNone(estimate.gas_units)
@@ -171,9 +161,7 @@ class GasEstimateTests(unittest.TestCase):
         rpc.overrides["eth_feeHistory"] = RpcError("no")
         rpc.overrides["eth_maxPriorityFeePerGas"] = RpcError("no")
         rpc.overrides["eth_gasPrice"] = RpcError("no")
-        estimate = estimate_claim(
-            rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA
-        )
+        estimate = estimate_claim(rpc, chain(), wallet=WALLET, distributor=DISTRIBUTOR, data=DATA)
         self.assertEqual(estimate.quality, UNAVAILABLE)
         self.assertIsNone(estimate.cost_wei)
 

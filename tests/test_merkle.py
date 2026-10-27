@@ -34,8 +34,7 @@ class RootTests(unittest.TestCase):
     def test_matches_uniswap_reference_root(self):
         claims = _fixture_claims()
         leaves = [
-            leaf_hash(index, account, amount, encoding="packed")
-            for index, (account, amount) in enumerate(claims)
+            leaf_hash(index, account, amount, encoding="packed") for index, (account, amount) in enumerate(claims)
         ]
         self.assertEqual(compute_root(leaves).hex(), REFERENCE_ROOT)
 
@@ -54,8 +53,7 @@ class ProofTests(unittest.TestCase):
     def setUp(self):
         self.claims = _fixture_claims()
         self.leaves = [
-            leaf_hash(index, account, amount, encoding="packed")
-            for index, (account, amount) in enumerate(self.claims)
+            leaf_hash(index, account, amount, encoding="packed") for index, (account, amount) in enumerate(self.claims)
         ]
         self.root = compute_root(self.leaves)
 
@@ -72,16 +70,12 @@ class ProofTests(unittest.TestCase):
     def test_wrong_amount_fails(self):
         account, amount = self.claims[3]
         proof = build_proof(3, account, amount, self.claims, encoding="packed")
-        self.assertFalse(
-            verify_proof(3, account, amount + 1, proof, self.root, encoding="packed")
-        )
+        self.assertFalse(verify_proof(3, account, amount + 1, proof, self.root, encoding="packed"))
 
     def test_wrong_root_fails(self):
         account, amount = self.claims[0]
         proof = build_proof(0, account, amount, self.claims, encoding="packed")
-        self.assertFalse(
-            verify_proof(0, account, amount, proof, b"\x00" * 32, encoding="packed")
-        )
+        self.assertFalse(verify_proof(0, account, amount, proof, b"\x00" * 32, encoding="packed"))
 
     def test_encoding_must_match(self):
         account, amount = self.claims[5]

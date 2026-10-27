@@ -229,13 +229,11 @@ class DemoSeedTests(ServiceTestCase):
         self.assertEqual(self.service.db.latest_snapshot()["id"], snapshot_before)
 
     def test_bulk_wallet_import_reports_rows(self):
-        result = self.service.add_wallets(
-            [
-                {"address": "0x" + "AB" * 20, "label": "Research", "tags": "defi"},
-                {"address": "nope"},
-                {"address": "0x" + "ab" * 20},
-            ]
-        )
+        result = self.service.add_wallets([
+            {"address": "0x" + "AB" * 20, "label": "Research", "tags": "defi"},
+            {"address": "nope"},
+            {"address": "0x" + "ab" * 20},
+        ])
         self.assertEqual(result["added"], 1)
         self.assertEqual(result["updated"], 0)
         self.assertEqual(len(result["errors"]), 2)
@@ -304,16 +302,14 @@ class DemoSeedTests(ServiceTestCase):
         self.assertFalse(self.service.delete_wallet(wallet["address"]))
 
     def test_custom_airdrop_add_and_remove(self):
-        drop = self.service.add_airdrop(
-            {
-                "id": "custom-drop",
-                "name": "Custom Drop",
-                "chain": "ethereum",
-                "distributor": "0x" + "dd" * 20,
-                "token": "0x" + "aa" * 20,
-                "links": {"docs": "https://example.com"},
-            }
-        )
+        drop = self.service.add_airdrop({
+            "id": "custom-drop",
+            "name": "Custom Drop",
+            "chain": "ethereum",
+            "distributor": "0x" + "dd" * 20,
+            "token": "0x" + "aa" * 20,
+            "links": {"docs": "https://example.com"},
+        })
         self.assertEqual(drop["id"], "custom-drop")
         self.assertEqual(drop["source"], "custom")
         self.assertIn("no eligibility source", " ".join(drop["risk"]["reasons"]))

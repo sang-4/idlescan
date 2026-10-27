@@ -7,7 +7,9 @@ from pathlib import Path
 from idlescan.db import SCHEMA_VERSION, Database
 
 
-def report_payload(*, idle=100.0, unclaimed=25.0, status="unclaimed", wallet="0x1111111111111111111111111111111111111111"):
+def report_payload(
+    *, idle=100.0, unclaimed=25.0, status="unclaimed", wallet="0x1111111111111111111111111111111111111111"
+):
     return {
         "generated_at": "2026-10-26T00:00:00+00:00",
         "wallets": [wallet],

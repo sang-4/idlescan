@@ -132,11 +132,7 @@ class FetchTests(unittest.TestCase):
         with self.assertRaises(BlockedURL):
             safe_fetch(
                 "https://datasets.example.org/a.json",
-                resolver=lambda host, port: (
-                    ["127.0.0.1"]
-                    if host == "127.0.0.1"
-                    else ["93.184.216.34"]
-                ),
+                resolver=lambda host, port: ["127.0.0.1"] if host == "127.0.0.1" else ["93.184.216.34"],
                 transport=transport,
             )
 

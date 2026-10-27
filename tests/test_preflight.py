@@ -88,9 +88,7 @@ class PreflightTests(unittest.TestCase):
         self.assertIn("distributor", preflight)
         self.assertIn("explorer_url", preflight)
         self.assertTrue(result["what_you_are_about_to_sign"])
-        self.assertTrue(
-            any("never asks you to send ETH" in line for line in result["what_you_are_about_to_sign"])
-        )
+        self.assertTrue(any("never asks you to send ETH" in line for line in result["what_you_are_about_to_sign"]))
 
     def test_already_claimed_since_snapshot_is_refused(self):
         self.rpc.already_claimed = True

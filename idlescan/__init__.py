@@ -1,9 +1,9 @@
 """idlescan - read-only idle balance & unclaimed airdrop scanner.
 
-    from idlescan import scan
+from idlescan import scan
 
-    report = scan(["0xabc..."], chains=["ethereum", "base"])
-    print(report.total_value)
+report = scan(["0xabc..."], chains=["ethereum", "base"])
+print(report.total_value)
 """
 
 from __future__ import annotations

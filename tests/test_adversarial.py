@@ -25,15 +25,11 @@ class AdversarialApiTests(unittest.TestCase):
             demo=True,
             max_body_bytes=1024,
         )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.seed_demo()
         self.server = create_server(self.service, self.settings)
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -42,9 +38,7 @@ class AdversarialApiTests(unittest.TestCase):
         self.thread.join(timeout=5)
         self._tmp.cleanup()
 
-    def raw_request(
-        self, method, path, body=b"", headers=None, raw=False
-    ):
+    def raw_request(self, method, path, body=b"", headers=None, raw=False):
         """Send a raw HTTP request, returning (status, body_bytes, headers)."""
         request_headers = dict(headers or {})
         if body is not None:
@@ -63,7 +57,9 @@ class AdversarialApiTests(unittest.TestCase):
 
     def test_malformed_json_body(self):
         status, body, _ = self.raw_request(
-            "POST", "/api/check", body=b"{not json",
+            "POST",
+            "/api/check",
+            body=b"{not json",
             headers={"content-type": "application/json", "x-idlescan": "1"},
         )
         self.assertEqual(status, 400)
@@ -71,14 +67,18 @@ class AdversarialApiTests(unittest.TestCase):
     def test_oversized_body(self):
         big = b"x" * (self.settings.max_body_bytes + 1)
         status, body, _ = self.raw_request(
-            "POST", "/api/check", body=big,
+            "POST",
+            "/api/check",
+            body=big,
             headers={"content-type": "application/json", "x-idlescan": "1"},
         )
         self.assertEqual(status, 413)
 
     def test_wrong_content_type(self):
         status, body, _ = self.raw_request(
-            "POST", "/api/check", body=b"hello",
+            "POST",
+            "/api/check",
+            body=b"hello",
             headers={"content-type": "text/plain", "x-idlescan": "1"},
         )
         self.assertEqual(status, 415)
@@ -95,14 +95,16 @@ class AdversarialApiTests(unittest.TestCase):
 
     def test_unknown_method(self):
         status, _, _ = self.raw_request(
-            "PATCH", "/api/health",
+            "PATCH",
+            "/api/health",
             headers={"x-idlescan": "1"},
         )
         self.assertEqual(status, 405)
 
     def test_csrf_header_required_on_mutation(self):
         status, _, _ = self.raw_request(
-            "POST", "/api/wallets",
+            "POST",
+            "/api/wallets",
             body=json.dumps({"address": "0x" + "11" * 20}).encode(),
             headers={"content-type": "application/json"},
         )
@@ -110,7 +112,8 @@ class AdversarialApiTests(unittest.TestCase):
 
     def test_origin_mismatch_rejected(self):
         status, _, _ = self.raw_request(
-            "POST", "/api/check",
+            "POST",
+            "/api/check",
             body=json.dumps({"address": "0x" + "11" * 20}).encode(),
             headers={
                 "content-type": "application/json",

@@ -67,9 +67,7 @@ class ChainConfig:
         try:
             return self.chains[key.lower()]
         except KeyError:
-            raise ConfigError(
-                f"unknown chain {key!r}; known: {', '.join(sorted(self.chains))}"
-            ) from None
+            raise ConfigError(f"unknown chain {key!r}; known: {', '.join(sorted(self.chains))}") from None
 
     def resolve(self, keys: Iterable[str] | None) -> list[Chain]:
         if not keys:
@@ -124,8 +122,7 @@ def load_chains(path: Path | str | None = None) -> ChainConfig:
             raise ConfigError(f"bad chain entry {raw!r}: {exc}") from exc
         if chain.fee_model not in FEE_MODELS:
             raise ConfigError(
-                f"chain {chain.key} has unknown fee_model {chain.fee_model!r}; "
-                f"expected one of {', '.join(FEE_MODELS)}"
+                f"chain {chain.key} has unknown fee_model {chain.fee_model!r}; expected one of {', '.join(FEE_MODELS)}"
             )
         if chain.l1_fee not in L1_FEE_STRATEGIES:
             raise ConfigError(
@@ -140,9 +137,7 @@ def load_chains(path: Path | str | None = None) -> ChainConfig:
     return ChainConfig(chains=chains)
 
 
-def load_tokens(
-    config: ChainConfig, path: Path | str | None = None
-) -> dict[str, list[Token]]:
+def load_tokens(config: ChainConfig, path: Path | str | None = None) -> dict[str, list[Token]]:
     data = _read_json(Path(path) if path else DATA_DIR / "tokens.json")
     out: dict[str, list[Token]] = {}
     for chain_key, entries in (data.get("chains") or {}).items():

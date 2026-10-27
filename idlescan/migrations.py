@@ -231,9 +231,7 @@ CREATE INDEX IF NOT EXISTS idx_custom_tokens_chain ON custom_tokens(chain);
 
 
 def _add_columns(connection: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-    existing = {
-        row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
-    }
+    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()}
     for name, sql_type in columns.items():
         if name not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
@@ -288,9 +286,7 @@ def _migration_2(connection: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_dedupe_open "
         "ON alerts(dedupe_key) WHERE dedupe_key IS NOT NULL AND resolved_at IS NULL"
     )
-    connection.execute(
-        "CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(dedupe_key)"
-    )
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_alerts_dedupe ON alerts(dedupe_key)")
     _execute_script(connection, _NEW_TABLES)
 
 
@@ -304,9 +300,7 @@ MIGRATIONS_BY_VERSION = {migration.version: migration for migration in MIGRATION
 
 def schema_version(connection: sqlite3.Connection) -> int:
     try:
-        row = connection.execute(
-            "SELECT value FROM meta WHERE key = 'schema_version'"
-        ).fetchone()
+        row = connection.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
     except sqlite3.OperationalError:
         return 0
     if not row:
@@ -348,9 +342,7 @@ def apply_migrations(
             f"database schema v{current} is newer than this version of idlescan "
             f"(supports v{LATEST_SCHEMA_VERSION}). Upgrade idlescan or restore a backup."
         )
-    pending = [
-        migration for migration in MIGRATIONS if migration.version > current
-    ]
+    pending = [migration for migration in MIGRATIONS if migration.version > current]
     if not pending:
         return []
     if backup and current > 0 and path.exists():

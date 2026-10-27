@@ -239,9 +239,7 @@ class Settings:
         if not 0 <= self.port <= 65535:
             errors.append(f"IDLESCAN_PORT must be 0-65535, got {self.port}")
         if not 0 <= self.gas_buffer_pct <= 100:
-            errors.append(
-                f"IDLESCAN_GAS_BUFFER_PCT must be 0-100, got {self.gas_buffer_pct}"
-            )
+            errors.append(f"IDLESCAN_GAS_BUFFER_PCT must be 0-100, got {self.gas_buffer_pct}")
         if not 1 <= self.scan_workers <= 32:
             errors.append(f"IDLESCAN_SCAN_WORKERS must be 1-32, got {self.scan_workers}")
         if self.scan_timeout_seconds <= 0:
@@ -255,15 +253,11 @@ class Settings:
         if self.dataset_stale_days <= 0:
             errors.append("IDLESCAN_DATASET_STALE_DAYS must be positive")
         if self.log_format not in LOG_FORMATS:
-            errors.append(
-                f"IDLESCAN_LOG_FORMAT must be one of {', '.join(LOG_FORMATS)}"
-            )
+            errors.append(f"IDLESCAN_LOG_FORMAT must be one of {', '.join(LOG_FORMATS)}")
         if self.log_level.upper() not in LOG_LEVELS:
             errors.append(f"IDLESCAN_LOG_LEVEL must be one of {', '.join(LOG_LEVELS)}")
         if self.notify_min_severity not in SEVERITIES:
-            errors.append(
-                "IDLESCAN_NOTIFY_MIN_SEVERITY must be one of " + ", ".join(SEVERITIES)
-            )
+            errors.append("IDLESCAN_NOTIFY_MIN_SEVERITY must be one of " + ", ".join(SEVERITIES))
         if self.backup_keep < 1:
             errors.append("IDLESCAN_BACKUP_KEEP must be at least 1")
         for name, value in (
@@ -287,9 +281,7 @@ class Settings:
         return replace(self, **clean)
 
 
-def _rpc_overrides(
-    environ: dict[str, str], file_values: dict[str, str]
-) -> dict[str, list[str]]:
+def _rpc_overrides(environ: dict[str, str], file_values: dict[str, str]) -> dict[str, list[str]]:
     """Collect ``IDLESCAN_RPC_<CHAINKEY>`` overrides, taking precedence."""
     overrides: dict[str, list[str]] = {}
     for source in (file_values, environ):
@@ -347,9 +339,7 @@ def load_settings(env_file: str | Path | None = None, *, environ: dict[str, str]
         rate_limit_loopback=_as_bool(get("IDLESCAN_RATE_LIMIT_LOOPBACK"), False),
         rate_limit_read_per_minute=_as_int(get("IDLESCAN_RATE_LIMIT_READ_PER_MINUTE"), 240),
         rate_limit_write_per_minute=_as_int(get("IDLESCAN_RATE_LIMIT_WRITE_PER_MINUTE"), 60),
-        rate_limit_scan_per_ten_minutes=_as_int(
-            get("IDLESCAN_RATE_LIMIT_SCAN_PER_10_MINUTES"), 12
-        ),
+        rate_limit_scan_per_ten_minutes=_as_int(get("IDLESCAN_RATE_LIMIT_SCAN_PER_10_MINUTES"), 12),
         allow_http_fetch=_as_bool(get("IDLESCAN_ALLOW_HTTP_FETCH"), False),
         max_fetch_bytes=_as_int(get("IDLESCAN_MAX_FETCH_BYTES"), DEFAULT_MAX_FETCH_BYTES),
         fetch_allowed_hosts=_as_list(get("IDLESCAN_FETCH_ALLOWED_HOSTS"), []),

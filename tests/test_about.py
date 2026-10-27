@@ -67,8 +67,18 @@ class AboutPayloadTests(unittest.TestCase):
 
     def test_text_rendering_has_every_declared_field(self):
         text = render_text(collect(Settings()))
-        for label in ("product", "version", "license", "python", "os", "schema",
-                      "chains", "claim hand-off", "remote guard", "database"):
+        for label in (
+            "product",
+            "version",
+            "license",
+            "python",
+            "os",
+            "schema",
+            "chains",
+            "claim hand-off",
+            "remote guard",
+            "database",
+        ):
             self.assertIn(label, text)
 
 

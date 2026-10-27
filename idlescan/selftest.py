@@ -240,10 +240,8 @@ def describe_invariants(report: ScanReport) -> str:
     by_wallet = {c.wallet: c for c in report.claims}
     lines = [
         "selftest checks:",
-        f"  - unclaimed allocation detected for {WALLET_UNCLAIMED}: "
-        f"{by_wallet[WALLET_UNCLAIMED].status}",
-        f"  - already-claimed allocation detected for {WALLET_CLAIMED}: "
-        f"{by_wallet[WALLET_CLAIMED].status}",
+        f"  - unclaimed allocation detected for {WALLET_UNCLAIMED}: {by_wallet[WALLET_UNCLAIMED].status}",
+        f"  - already-claimed allocation detected for {WALLET_CLAIMED}: {by_wallet[WALLET_CLAIMED].status}",
         f"  - proof verified against merkle root: {by_wallet[WALLET_UNCLAIMED].proof_verified}",
         f"  - address with no allocation excluded: {by_wallet[WALLET_EMPTY].status}",
         f"  - gas estimate present: {by_wallet[WALLET_UNCLAIMED].gas_native is not None}",

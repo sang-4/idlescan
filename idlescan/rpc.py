@@ -197,9 +197,7 @@ class Rpc:
         message = error.get("message", "unknown node error")
         if "revert" in message.lower() or code == 3:
             raise Revert(message, code=code)
-        raise RpcError(
-            f"{redact_url(url)}: {message}", transient=code in _TRANSIENT_CODES, code=code
-        )
+        raise RpcError(f"{redact_url(url)}: {message}", transient=code in _TRANSIENT_CODES, code=code)
 
     def _attempt(self, method: str, params: Iterable[Any]) -> Any:
         last: Exception | None = None
@@ -285,16 +283,11 @@ class Rpc:
             raw_by_value.setdefault(key, value)
             if len(seen[key]) >= required:
                 return raw_by_value[key]
-        summary = "; ".join(
-            f"{', '.join(urls)} -> {key[:40]}"
-            for key, urls in seen.items()
-        )
+        summary = "; ".join(f"{', '.join(urls)} -> {key[:40]}" for key, urls in seen.items())
         detail = summary or "no endpoint answered"
         if failures:
             detail += " | " + "; ".join(failures)
-        raise QuorumError(
-            f"quorum {required} not reached for {method}: {detail}"
-        )
+        raise QuorumError(f"quorum {required} not reached for {method}: {detail}")
 
     def eth_call_quorum(self, to: str, data: str, block: str = "latest") -> str:
         return self.request_quorum("eth_call", {"to": to, "data": data}, block)
@@ -319,13 +312,11 @@ class Rpc:
                 is_stale = bool(timestamp and now - timestamp > stale_seconds)
                 self.health.mark_block(url, number, timestamp, stale=is_stale)
                 if is_stale:
-                    stale.append(
-                        {
-                            "url": redact_url(url),
-                            "block_timestamp": timestamp,
-                            "lag_seconds": now - timestamp,
-                        }
-                    )
+                    stale.append({
+                        "url": redact_url(url),
+                        "block_timestamp": timestamp,
+                        "lag_seconds": now - timestamp,
+                    })
             except (RpcError, TypeError, ValueError) as exc:
                 self.health.failure(url, str(exc), label=self.label)
         return stale

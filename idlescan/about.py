@@ -89,7 +89,12 @@ def render_text(payload: dict[str, Any]) -> str:
         ("remote guard", payload["remote_guard"]),
         ("auth token", "required" if payload["auth_required"] else "not set"),
         ("database", payload["database"]),
-        ("dataset dir", "present" if payload["dataset_dir_present"] else ("configured, missing" if payload["dataset_dir_configured"] else "not configured")),
+        (
+            "dataset dir",
+            "present"
+            if payload["dataset_dir_present"]
+            else ("configured, missing" if payload["dataset_dir_configured"] else "not configured"),
+        ),
         ("demo mode", "on" if payload["demo_mode"] else "off"),
     ]
     width = max(len(label) for label, _ in rows)

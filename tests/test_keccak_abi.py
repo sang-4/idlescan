@@ -91,7 +91,10 @@ class AbiTests(unittest.TestCase):
             encode(["uint256"], [-1])
 
     def test_address_validation(self):
-        self.assertEqual(normalise_address("0xD8DA6BF26964AF9D7EED9E03E53415D37AA96045"), "0xd8da6bf26964af9d7eed9e03e53415d37aa96045")
+        self.assertEqual(
+            normalise_address("0xD8DA6BF26964AF9D7EED9E03E53415D37AA96045"),
+            "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+        )
         with self.assertRaises(ValueError):
             normalise_address("0x1234")
         with self.assertRaises(ValueError):

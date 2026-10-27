@@ -40,9 +40,7 @@ def make_v1(path: Path, *, schema: int = 1) -> None:
     connection = sqlite3.connect(path)
     try:
         connection.executescript(SCHEMA_V1)
-        connection.execute(
-            "INSERT INTO meta(key, value) VALUES('schema_version', ?)", (str(schema),)
-        )
+        connection.execute("INSERT INTO meta(key, value) VALUES('schema_version', ?)", (str(schema),))
         connection.execute(
             "INSERT INTO wallets(address, label, tags, archived, created_at) "
             "VALUES(?, 'old wallet', 'cold', 0, '2026-01-01T00:00:00+00:00')",
@@ -112,13 +110,9 @@ class MigrationTests(unittest.TestCase):
         self.assertTrue(backup.is_file())
         with sqlite3.connect(backup) as connection:
             self.assertEqual(schema_version(connection), 1)
-            columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(claims)")
-            }
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(claims)")}
             self.assertNotIn("gas_units", columns)
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM wallets").fetchone()[0], 1
-            )
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM wallets").fetchone()[0], 1)
 
     def test_newer_schema_is_refused(self):
         make_v1(self.path, schema=LATEST_SCHEMA_VERSION + 5)
@@ -134,9 +128,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("refusing to migrate", str(ctx.exception))
         with sqlite3.connect(self.path) as connection:
             self.assertEqual(schema_version(connection), 1)
-            columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(claims)")
-            }
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(claims)")}
             self.assertNotIn("gas_units", columns)
 
     def test_failed_migration_rolls_back_and_keeps_version(self):
@@ -153,9 +145,7 @@ class MigrationTests(unittest.TestCase):
         self.assertIn("migration 3", str(ctx.exception))
         with sqlite3.connect(self.path) as connection:
             self.assertEqual(schema_version(connection), 2)
-            columns = {
-                row[1] for row in connection.execute("PRAGMA table_info(claims)")
-            }
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(claims)")}
             self.assertNotIn("half_applied", columns)
 
     def test_migration_is_idempotent(self):
@@ -214,7 +204,10 @@ class CheckTests(unittest.TestCase):
     def test_status_reports_counts_and_latest_snapshot(self):
         db = Database(self.path).init()
         db.save_snapshot(
-            chains=["ethereum"], wallets=[WALLET], totals={}, report={"claims": []},
+            chains=["ethereum"],
+            wallets=[WALLET],
+            totals={},
+            report={"claims": []},
             trigger="manual",
         )
         payload = db.status()
@@ -280,35 +273,25 @@ class PruneTests(unittest.TestCase):
 
     def test_open_alerts_and_latest_snapshot_are_retained(self):
         snapshot = self.add_snapshot()
-        self.db.add_alert(
-            kind="deadline", severity="warning", title="Open", body="b", snapshot_id=snapshot
-        )
+        self.db.add_alert(kind="deadline", severity="warning", title="Open", body="b", snapshot_id=snapshot)
         with self.db.connect() as connection:
-            connection.execute(
-                "UPDATE alerts SET created_at = '2020-01-01T00:00:00+00:00'"
-            )
+            connection.execute("UPDATE alerts SET created_at = '2020-01-01T00:00:00+00:00'")
         self.db.prune(snapshots=1, alerts_days=1, dry_run=False)
         self.assertEqual(len(self.db.list_alerts()), 1)
         self.assertEqual(self.db.list_alerts()[0]["snapshot_id"], snapshot)
 
     def test_old_acknowledged_detached_alerts_are_deleted(self):
         self.add_snapshot()
-        self.db.add_alert(
-            kind="deadline", severity="warning", title="Ack me", body="b", snapshot_id=None
-        )
+        self.db.add_alert(kind="deadline", severity="warning", title="Ack me", body="b", snapshot_id=None)
         alert_id = self.db.list_alerts()[0]["id"]
         self.db.ack_alert(alert_id)
         with self.db.connect() as connection:
-            connection.execute(
-                "UPDATE alerts SET created_at = '2020-01-01T00:00:00+00:00'"
-            )
+            connection.execute("UPDATE alerts SET created_at = '2020-01-01T00:00:00+00:00'")
             connection.execute(
                 "INSERT INTO audit(created_at, actor, action, detail) "
                 "VALUES('2020-01-01T00:00:00+00:00', 'cli', 'old', 'x')"
             )
-        plan = self.db.prune(
-            snapshots=1, alerts_days=1, audit_days=1, dry_run=False
-        )
+        plan = self.db.prune(snapshots=1, alerts_days=1, audit_days=1, dry_run=False)
         self.assertEqual(plan["deleted"].get("alerts"), 1)
         self.assertGreaterEqual(plan["deleted"].get("audit", 0), 1)
         self.assertEqual(self.db.list_alerts(include_ack=True), [])
@@ -317,9 +300,7 @@ class PruneTests(unittest.TestCase):
     def test_zero_retention_keeps_everything(self):
         for _ in range(2):
             self.add_snapshot()
-        plan = self.db.prune(
-            snapshots=0, alerts_days=0, audit_days=0, executions_days=0, jobs_days=0
-        )
+        plan = self.db.prune(snapshots=0, alerts_days=0, audit_days=0, executions_days=0, jobs_days=0)
         self.assertEqual(plan["deleted"], {})
         self.assertEqual(len(self.db.list_snapshots()), 2)
 
@@ -327,9 +308,7 @@ class PruneTests(unittest.TestCase):
 class BackupRotationTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        self.settings = Settings(
-            db_path=Path(self._tmp.name) / "idlescan.db", backup_keep=2
-        )
+        self.settings = Settings(db_path=Path(self._tmp.name) / "idlescan.db", backup_keep=2)
         self.service = PlatformService(self.settings)
         self.service.db.init()
         self.directory = Path(self._tmp.name) / "backups"
@@ -416,15 +395,11 @@ class DatabaseCliTests(unittest.TestCase):
                     "INSERT INTO snapshots(created_at, chains, wallets, trigger, totals, report) "
                     "VALUES('2026-01-01T00:00:00+00:00', '[]', '[]', 'manual', '{}', '{}')"
                 )
-        code, out, _ = run_cli(
-            "db", "prune", "--snapshots", "1", "--db", str(self.path)
-        )
+        code, out, _ = run_cli("db", "prune", "--snapshots", "1", "--db", str(self.path))
         self.assertEqual(code, 0)
         self.assertIn("dry run", out)
         self.assertEqual(len(Database(self.path).list_snapshots()), 3)
-        code, out, _ = run_cli(
-            "db", "prune", "--snapshots", "1", "--yes", "--db", str(self.path)
-        )
+        code, out, _ = run_cli("db", "prune", "--snapshots", "1", "--yes", "--db", str(self.path))
         self.assertEqual(code, 0)
         self.assertIn("deleted", out)
         self.assertEqual(len(Database(self.path).list_snapshots()), 1)

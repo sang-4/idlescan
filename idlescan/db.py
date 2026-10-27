@@ -85,9 +85,7 @@ class Database:
 
     def get_wallet(self, address: str) -> dict | None:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM wallets WHERE address = ?", (address.lower(),)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM wallets WHERE address = ?", (address.lower(),)).fetchone()
         return dict(row) if row else None
 
     def list_wallets(self, *, include_archived: bool = False) -> list[dict]:
@@ -139,9 +137,7 @@ class Database:
 
     def delete_airdrop(self, drop_id: str) -> bool:
         with self.connect() as connection:
-            cursor = connection.execute(
-                "DELETE FROM airdrops WHERE id = ? AND source != 'registry'", (drop_id,)
-            )
+            cursor = connection.execute("DELETE FROM airdrops WHERE id = ? AND source != 'registry'", (drop_id,))
         return cursor.rowcount > 0
 
     def purge_demo_records(self, demo_addresses: Sequence[str]) -> dict[str, int]:
@@ -178,10 +174,7 @@ class Database:
                 counts["wallets"] = max(cursor.rowcount, 0)
 
             demo_drop_ids = [
-                row[0]
-                for row in connection.execute(
-                    "SELECT id FROM airdrops WHERE source = 'demo'"
-                ).fetchall()
+                row[0] for row in connection.execute("SELECT id FROM airdrops WHERE source = 'demo'").fetchall()
             ]
 
             snapshot_ids: list[int] = []
@@ -351,9 +344,7 @@ class Database:
                     (chain.lower(),),
                 ).fetchall()
             else:
-                rows = connection.execute(
-                    "SELECT * FROM custom_tokens ORDER BY chain, symbol"
-                ).fetchall()
+                rows = connection.execute("SELECT * FROM custom_tokens ORDER BY chain, symbol").fetchall()
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------ jobs
@@ -375,9 +366,7 @@ class Database:
             updates["result"] = json.dumps(updates["result"])
         assignments = ", ".join(f"{key} = ?" for key in updates)
         with self.connect() as connection:
-            connection.execute(
-                f"UPDATE jobs SET {assignments} WHERE id = ?", (*updates.values(), job_id)
-            )
+            connection.execute(f"UPDATE jobs SET {assignments} WHERE id = ?", (*updates.values(), job_id))
 
     def get_job(self, job_id: str) -> dict | None:
         with self.connect() as connection:
@@ -391,9 +380,7 @@ class Database:
 
     def recent_jobs(self, limit: int = 20) -> list[dict]:
         with self.connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------- snapshots
@@ -508,8 +495,7 @@ class Database:
     def list_snapshots(self, limit: int = 30) -> list[dict]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT id, created_at, chains, wallets, trigger, totals FROM snapshots "
-                "ORDER BY id DESC LIMIT ?",
+                "SELECT id, created_at, chains, wallets, trigger, totals FROM snapshots ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         return [
@@ -697,7 +683,18 @@ class Database:
             cursor = connection.execute(
                 "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id, dedupe_key, tier) "
                 "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (now(), kind, severity, redact_text(title), redact_text(body), wallet, drop_id, snapshot_id, key, tier),
+                (
+                    now(),
+                    kind,
+                    severity,
+                    redact_text(title),
+                    redact_text(body),
+                    wallet,
+                    drop_id,
+                    snapshot_id,
+                    key,
+                    tier,
+                ),
             )
         return int(cursor.lastrowid) if cursor.rowcount else None
 
@@ -716,10 +713,7 @@ class Database:
             clauses.append("resolved_at IS NULL")
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += (
-            " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,"
-            " id DESC LIMIT ?"
-        )
+        query += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id DESC LIMIT ?"
         with self.connect() as connection:
             return [dict(row) for row in connection.execute(query, (limit,))]
 
@@ -736,8 +730,7 @@ class Database:
     def resolve_alert(self, alert_id: int, reason: str = "resolved by operator") -> bool:
         with self.connect() as connection:
             cursor = connection.execute(
-                "UPDATE alerts SET resolved_at = ?, resolved_reason = ? "
-                "WHERE id = ? AND resolved_at IS NULL",
+                "UPDATE alerts SET resolved_at = ?, resolved_reason = ? WHERE id = ? AND resolved_at IS NULL",
                 (now(), redact_text(reason), alert_id),
             )
         return cursor.rowcount > 0
@@ -793,9 +786,7 @@ class Database:
         return int(cursor.rowcount)
 
     # ----------------------------------------------------------- notifications
-    def add_notification(
-        self, *, alert_id: int | None, kind: str, url_redacted: str
-    ) -> int:
+    def add_notification(self, *, alert_id: int | None, kind: str, url_redacted: str) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO notifications(created_at, alert_id, kind, url_redacted, status, attempts) "
@@ -815,8 +806,7 @@ class Database:
     ) -> None:
         with self.connect() as connection:
             connection.execute(
-                "UPDATE notifications SET status = ?, attempts = ?, error = ?, dead_letter = ? "
-                "WHERE id = ?",
+                "UPDATE notifications SET status = ?, attempts = ?, error = ?, dead_letter = ? WHERE id = ?",
                 (status, attempts, redact_text(error) if error else None, 1 if dead_letter else 0, notification_id),
             )
 
@@ -824,13 +814,13 @@ class Database:
         with self.connect() as connection:
             return [
                 dict(row)
-                for row in connection.execute(
-                    "SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,)
-                )
+                for row in connection.execute("SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,))
             ]
 
     # ------------------------------------------------------------ executions
-    def add_execution(self, *, wallet: str, drop_id: str, chain: str, tx_hash: str | None, status: str, detail: str = "") -> int:
+    def add_execution(
+        self, *, wallet: str, drop_id: str, chain: str, tx_hash: str | None, status: str, detail: str = ""
+    ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
                 "INSERT INTO executions(created_at, wallet, drop_id, chain, tx_hash, status, detail) "
@@ -841,9 +831,9 @@ class Database:
 
     def list_executions(self, limit: int = 50) -> list[dict]:
         with self.connect() as connection:
-            return [dict(row) for row in connection.execute(
-                "SELECT * FROM executions ORDER BY id DESC LIMIT ?", (limit,)
-            )]
+            return [
+                dict(row) for row in connection.execute("SELECT * FROM executions ORDER BY id DESC LIMIT ?", (limit,))
+            ]
 
     # ----------------------------------------------------------------- audit
     def log(self, actor: str, action: str, detail: str = "") -> None:
@@ -855,9 +845,7 @@ class Database:
 
     def list_audit(self, limit: int = 100) -> list[dict]:
         with self.connect() as connection:
-            return [dict(row) for row in connection.execute(
-                "SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,)
-            )]
+            return [dict(row) for row in connection.execute("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))]
 
     # ----------------------------------------------------------------- stats
     def stats(self) -> dict:
@@ -883,7 +871,6 @@ class Database:
                 "positions": len(claims),
             }
         return result
-
 
     # ------------------------------------------------------------- provenance
     def upsert_dataset_provenance(self, record: dict) -> None:
@@ -915,9 +902,7 @@ class Database:
 
     def dataset_provenance(self, drop_id: str) -> dict | None:
         with self.connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM dataset_provenance WHERE drop_id = ?", (drop_id,)
-            ).fetchone()
+            row = connection.execute("SELECT * FROM dataset_provenance WHERE drop_id = ?", (drop_id,)).fetchone()
         if not row:
             return None
         payload = dict(row)
@@ -943,9 +928,7 @@ class Database:
             counts: dict[str, int] = {}
             for table in tables:
                 try:
-                    counts[table] = int(
-                        connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-                    )
+                    counts[table] = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
                 except sqlite3.OperationalError:
                     counts[table] = 0  # table added by a future/absent migration
             return counts
@@ -990,26 +973,19 @@ class Database:
             }
         with self.connect() as connection:
             current = schema_version(connection)
-            integrity_rows = [
-                str(row[0])
-                for row in connection.execute("PRAGMA integrity_check").fetchall()
-            ]
+            integrity_rows = [str(row[0]) for row in connection.execute("PRAGMA integrity_check").fetchall()]
             integrity_ok = integrity_rows == ["ok"]
             if not integrity_ok:
                 problems.extend(f"integrity: {row}" for row in integrity_rows[:20])
 
             foreign_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
             for row in foreign_rows:
-                problems.append(
-                    f"foreign key violation: table={row[0]} rowid={row[1]} parent={row[2]}"
-                )
+                problems.append(f"foreign key violation: table={row[0]} rowid={row[1]} parent={row[2]}")
 
             def scalar(query: str, parameters: Sequence[Any] = ()) -> int:
                 return int(connection.execute(query, parameters).fetchone()[0])
 
-            orphan_claims = scalar(
-                "SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
-            )
+            orphan_claims = scalar("SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN (SELECT id FROM snapshots)")
             orphan_holdings = scalar(
                 "SELECT COUNT(*) FROM holdings WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
             )
@@ -1029,21 +1005,12 @@ class Database:
                 problems.append(f"{bad_snapshots} snapshot(s) contain invalid JSON")
 
             if current > LATEST_SCHEMA_VERSION:
-                problems.append(
-                    f"schema v{current} is newer than this release (v{LATEST_SCHEMA_VERSION})"
-                )
+                problems.append(f"schema v{current} is newer than this release (v{LATEST_SCHEMA_VERSION})")
             elif current < LATEST_SCHEMA_VERSION:
-                problems.append(
-                    f"schema v{current} is behind v{LATEST_SCHEMA_VERSION}; run "
-                    "`idlescan db migrate`"
-                )
+                problems.append(f"schema v{current} is behind v{LATEST_SCHEMA_VERSION}; run `idlescan db migrate`")
 
-            if "dedupe_key" in {
-                row[1] for row in connection.execute("PRAGMA table_info(alerts)")
-            }:
-                missing_keys = scalar(
-                    "SELECT COUNT(*) FROM alerts WHERE dedupe_key IS NULL AND resolved_at IS NULL"
-                )
+            if "dedupe_key" in {row[1] for row in connection.execute("PRAGMA table_info(alerts)")}:
+                missing_keys = scalar("SELECT COUNT(*) FROM alerts WHERE dedupe_key IS NULL AND resolved_at IS NULL")
                 if missing_keys:
                     problems.append(f"{missing_keys} open alert(s) have no dedupe key")
 
@@ -1116,15 +1083,11 @@ class Database:
                 query += f" AND {extra}"
             return int(connection.execute(query, (self._cutoff(days),)).fetchone()[0])
 
-        plan["alerts"] = age_count(
-            "alerts", alerts_days, "acknowledged = 1 AND snapshot_id IS NULL"
-        )
+        plan["alerts"] = age_count("alerts", alerts_days, "acknowledged = 1 AND snapshot_id IS NULL")
         plan["audit"] = age_count("audit", audit_days)
         plan["executions"] = age_count("executions", executions_days)
         plan["jobs"] = age_count("jobs", jobs_days, "finished_at IS NOT NULL")
-        plan["notifications"] = age_count(
-            "notifications", alerts_days, "status != 'pending'"
-        )
+        plan["notifications"] = age_count("notifications", alerts_days, "status != 'pending'")
         return {key: value for key, value in plan.items() if value}
 
     def prune(
@@ -1171,15 +1134,13 @@ class Database:
                         (keep,),
                     )
                     connection.execute(
-                        "DELETE FROM snapshots WHERE id NOT IN "
-                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        "DELETE FROM snapshots WHERE id NOT IN (SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
                         (keep,),
                     )
                 if alerts_days > 0:
                     cutoff = self._cutoff(alerts_days)
                     connection.execute(
-                        "DELETE FROM alerts WHERE created_at < ? AND acknowledged = 1 "
-                        "AND snapshot_id IS NULL",
+                        "DELETE FROM alerts WHERE created_at < ? AND acknowledged = 1 AND snapshot_id IS NULL",
                         (cutoff,),
                     )
                     connection.execute(
@@ -1187,9 +1148,7 @@ class Database:
                         (cutoff,),
                     )
                 if audit_days > 0:
-                    connection.execute(
-                        "DELETE FROM audit WHERE created_at < ?", (self._cutoff(audit_days),)
-                    )
+                    connection.execute("DELETE FROM audit WHERE created_at < ?", (self._cutoff(audit_days),))
                 if executions_days > 0:
                     connection.execute(
                         "DELETE FROM executions WHERE created_at < ?",

@@ -77,9 +77,7 @@ def pair_hash(left: bytes, right: bytes, *, sort_pairs: bool = True) -> bytes:
     return keccak256(left + right)
 
 
-def compute_root(
-    leaves: Iterable[bytes], *, sort_pairs: bool = True, sort_leaves: bool = True
-) -> bytes:
+def compute_root(leaves: Iterable[bytes], *, sort_pairs: bool = True, sort_leaves: bool = True) -> bytes:
     nodes = list(leaves)
     if not nodes:
         raise ValueError("cannot build a merkle tree with no leaves")
@@ -136,8 +134,7 @@ def build_proof(
     """
     target = leaf_hash(index, account, amount, encoding=encoding, double_hash=double_hash)
     nodes = [
-        leaf_hash(i, acct, amt, encoding=encoding, double_hash=double_hash)
-        for i, (acct, amt) in enumerate(claims)
+        leaf_hash(i, acct, amt, encoding=encoding, double_hash=double_hash) for i, (acct, amt) in enumerate(claims)
     ]
     nodes.sort()
     proof: list[bytes] = []
@@ -181,9 +178,7 @@ class ClaimDataset:
     provenance: dict[str, Any] | None = None
 
     @classmethod
-    def from_mapping(
-        cls, data: Mapping[str, Any], *, source: str | None = None
-    ) -> "ClaimDataset":
+    def from_mapping(cls, data: Mapping[str, Any], *, source: str | None = None) -> "ClaimDataset":
         return parse_dataset(data, source=source)
 
     def get(self, address: str) -> Claim | None:
@@ -211,9 +206,7 @@ class ClaimDataset:
 def _proof_bytes(items: Iterable[Any]) -> tuple[bytes, ...]:
     out = []
     for item in items:
-        raw = item if isinstance(item, (bytes, bytearray)) else bytes.fromhex(
-            str(item).removeprefix("0x")
-        )
+        raw = item if isinstance(item, (bytes, bytearray)) else bytes.fromhex(str(item).removeprefix("0x"))
         if len(raw) != 32:
             raise ValueError(f"proof element must be 32 bytes, got {len(raw)}")
         out.append(bytes(raw))
@@ -234,15 +227,10 @@ def parse_dataset(data: Mapping[str, Any], *, source: str | None = None) -> Clai
 
     claims: dict[str, Claim] = {}
     if isinstance(claims_raw, Mapping):
-        items = [
-            (address, entry) for address, entry in claims_raw.items()
-            if isinstance(entry, Mapping)
-        ]
+        items = [(address, entry) for address, entry in claims_raw.items() if isinstance(entry, Mapping)]
     elif isinstance(claims_raw, list):
         items = [
-            (entry.get("account") or entry.get("address"), entry)
-            for entry in claims_raw
-            if isinstance(entry, Mapping)
+            (entry.get("account") or entry.get("address"), entry) for entry in claims_raw if isinstance(entry, Mapping)
         ]
     else:
         raise ValueError("dataset has no claims section")

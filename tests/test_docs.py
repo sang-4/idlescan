@@ -7,8 +7,9 @@ from pathlib import Path
 from idlescan.api import build_router
 from idlescan.config import load_settings
 
-API_DOC = Path("docs/API.md")
-CONFIG_DOC = Path("docs/CONFIGURATION.md")
+ROOT = Path(__file__).resolve().parent.parent
+API_DOC = ROOT / "docs" / "API.md"
+CONFIG_DOC = ROOT / "docs" / "CONFIGURATION.md"
 
 
 class ApiDocSyncTests(unittest.TestCase):
@@ -48,9 +49,7 @@ class ConfigDocSyncTests(unittest.TestCase):
         keys = set(re.findall(r'"(IDLESCAN_[A-Z_0-9]+)"', source))
         missing = [key for key in sorted(keys) if key not in self.doc]
         if missing:
-            self.fail(
-                f"Environment variables not documented in docs/CONFIGURATION.md: {missing}"
-            )
+            self.fail(f"Environment variables not documented in docs/CONFIGURATION.md: {missing}")
 
 
 if __name__ == "__main__":

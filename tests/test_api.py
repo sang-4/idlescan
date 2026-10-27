@@ -36,9 +36,7 @@ class ApiTestCase(unittest.TestCase):
         self.service.seed_demo()
         self.server = create_server(self.service, self.settings, warnings=self.settings.validate())
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -137,7 +135,7 @@ class ReadOnlyApiTests(ApiTestCase):
         status, payload, headers = self.http("/claims")
         self.assertEqual(status, 200)
         self.assertIn("text/html", headers["content-type"])
-        self.assertIn(b"<div class=\"shell\">", payload)
+        self.assertIn(b'<div class="shell">', payload)
 
     def test_wallets_crud(self):
         status, payload = self.json("/api/wallets")
@@ -180,9 +178,7 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(payload["airdrop"]["source"], "custom")
 
-        status, payload = self.json(
-            "/api/airdrops/api-drop", "PATCH", {"enabled": False}, {"X-Idlescan": "1"}
-        )
+        status, payload = self.json("/api/airdrops/api-drop", "PATCH", {"enabled": False}, {"X-Idlescan": "1"})
         self.assertEqual(status, 200)
         self.assertFalse(payload["enabled"])
 
@@ -197,9 +193,7 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertEqual(status, 400)
         self.assertIn("X-Idlescan", payload["error"])
 
-        status, payload = self.json(
-            "/api/scan", "POST", {}, {"X-Idlescan": "1", "Origin": "http://evil.example"}
-        )
+        status, payload = self.json("/api/scan", "POST", {}, {"X-Idlescan": "1", "Origin": "http://evil.example"})
         self.assertEqual(status, 400)
         self.assertIn("cross-origin", payload["error"])
 
@@ -369,9 +363,7 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertEqual(status, 404)
 
     def test_check_address_and_bulk_import(self):
-        status, payload = self.json(
-            "/api/check", "POST", {"address": WALLET_UNCLAIMED}, {"X-Idlescan": "1"}
-        )
+        status, payload = self.json("/api/check", "POST", {"address": WALLET_UNCLAIMED}, {"X-Idlescan": "1"})
         self.assertEqual(status, 200)
         self.assertEqual(payload["address"], WALLET_UNCLAIMED)
         self.assertEqual(payload["totals"]["unclaimed"], 1)

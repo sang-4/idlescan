@@ -21,10 +21,7 @@ from .scanner import (
     ScanReport,
 )
 
-DISCLAIMER = (
-    "Research tool, not financial advice. Verify contract addresses against "
-    "official sources."
-)
+DISCLAIMER = "Research tool, not financial advice. Verify contract addresses against official sources."
 
 STATUS_ORDER = {UNCLAIMED: 0, CLAIMED: 1, UNKNOWN: 2, ERROR: 3, NO_SOURCE: 4, NO_ALLOCATION: 5}
 
@@ -65,9 +62,7 @@ def _table(headers: Sequence[str], rows: Iterable[Sequence[str]], aligns: Sequen
     aligns = aligns or ["<"] * len(headers)
 
     def line(cells: Sequence[str]) -> str:
-        return "  ".join(
-            f"{cell:{aligns[i]}{widths[i]}}" for i, cell in enumerate(cells)
-        ).rstrip()
+        return "  ".join(f"{cell:{aligns[i]}{widths[i]}}" for i, cell in enumerate(cells)).rstrip()
 
     out = [line(headers), "  ".join("-" * w for w in widths)]
     out.extend(line(row) for row in rows)
@@ -84,9 +79,7 @@ def render_console(report: ScanReport, *, show_empty: bool = False, show_claimed
     header = f"idlescan · {len(report.wallets)} wallet(s) · {len(report.chains)} chain(s) · {report.generated_at}"
     blocks.append(header)
 
-    holdings = sorted(
-        report.holdings, key=lambda h: (-(h.usd_value or 0.0), h.chain, h.symbol)
-    )
+    holdings = sorted(report.holdings, key=lambda h: (-(h.usd_value or 0.0), h.chain, h.symbol))
     if holdings:
         rows = [
             [
@@ -98,7 +91,9 @@ def render_console(report: ScanReport, *, show_empty: bool = False, show_claimed
             ]
             for h in holdings
         ]
-        blocks.append("IDLE BALANCES\n" + _table(["CHAIN", "ASSET", "AMOUNT", "USD", "WALLET"], rows, ["<", "<", ">", ">", "<"]))
+        blocks.append(
+            "IDLE BALANCES\n" + _table(["CHAIN", "ASSET", "AMOUNT", "USD", "WALLET"], rows, ["<", "<", ">", ">", "<"])
+        )
     else:
         blocks.append("IDLE BALANCES\n(none found on the scanned chains)")
 
@@ -108,18 +103,16 @@ def render_console(report: ScanReport, *, show_empty: bool = False, show_claimed
     if claims:
         rows = []
         for claim in claims:
-            rows.append(
-                [
-                    _status_label(claim),
-                    claim.chain,
-                    claim.name,
-                    fmt_amount(claim.amount) if claim.amount_raw else "-",
-                    "-" if claim.status == CLAIMED or not claim.amount_raw else fmt_usd(claim.usd_value),
-                    fmt_gas(claim) if claim.status == UNCLAIMED else "-",
-                    fmt_usd(claim.net_usd) if claim.net_usd is not None else "-",
-                    _short_wallet(claim.wallet),
-                ]
-            )
+            rows.append([
+                _status_label(claim),
+                claim.chain,
+                claim.name,
+                fmt_amount(claim.amount) if claim.amount_raw else "-",
+                "-" if claim.status == CLAIMED or not claim.amount_raw else fmt_usd(claim.usd_value),
+                fmt_gas(claim) if claim.status == UNCLAIMED else "-",
+                fmt_usd(claim.net_usd) if claim.net_usd is not None else "-",
+                _short_wallet(claim.wallet),
+            ])
         blocks.append(
             "AIRDROPS\n"
             + _table(
@@ -134,9 +127,7 @@ def render_console(report: ScanReport, *, show_empty: bool = False, show_claimed
     hidden = len([c for c in report.claims if c.status == NO_ALLOCATION])
     footnotes: list[str] = []
     if hidden and not show_empty:
-        footnotes.append(
-            f"{hidden} address/drop combination(s) had no allocation (use --all to list them)."
-        )
+        footnotes.append(f"{hidden} address/drop combination(s) had no allocation (use --all to list them).")
     notes = [c for c in report.claims if c.note]
     for note in notes[:6]:
         footnotes.append(f"note: {note.name} / {_short_wallet(note.wallet)}: {note.note}")
@@ -252,62 +243,98 @@ def write_json(report: ScanReport, path: Path) -> None:
 def write_csv(report: ScanReport, path: Path) -> None:
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(
-        ["kind", "chain", "wallet", "asset_or_drop", "status", "amount", "raw", "decimals",
-         "usd_price", "usd_value", "gas_usd", "net_usd", "note", "reference",
-         "gas_units", "fee_per_gas", "l1_fee_wei", "gas_estimate_quality",
-         "gas_usd_buffered", "net_usd_raw"]
-    )
+    writer.writerow([
+        "kind",
+        "chain",
+        "wallet",
+        "asset_or_drop",
+        "status",
+        "amount",
+        "raw",
+        "decimals",
+        "usd_price",
+        "usd_value",
+        "gas_usd",
+        "net_usd",
+        "note",
+        "reference",
+        "gas_units",
+        "fee_per_gas",
+        "l1_fee_wei",
+        "gas_estimate_quality",
+        "gas_usd_buffered",
+        "net_usd_raw",
+    ])
     for holding in report.holdings:
-        writer.writerow(
-            [
-                "balance" if holding.is_native else "token",
-                holding.chain,
-                holding.wallet,
-                holding.symbol,
-                "",
-                str(holding.amount),
-                str(holding.raw),
-                holding.decimals,
-                holding.usd_price if holding.usd_price is not None else "",
-                holding.usd_value if holding.usd_value is not None else "",
-                "",
-                "",
-                "",
-                holding.asset_address or "",
-                "", "", "", "", "", "",
-            ]
-        )
+        writer.writerow([
+            "balance" if holding.is_native else "token",
+            holding.chain,
+            holding.wallet,
+            holding.symbol,
+            "",
+            str(holding.amount),
+            str(holding.raw),
+            holding.decimals,
+            holding.usd_price if holding.usd_price is not None else "",
+            holding.usd_value if holding.usd_value is not None else "",
+            "",
+            "",
+            "",
+            holding.asset_address or "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+        ])
     for claim in report.claims:
-        writer.writerow(
-            [
-                "claim",
-                claim.chain,
-                claim.wallet,
-                claim.name,
-                _status_label(claim),
-                str(claim.amount) if claim.amount_raw else "",
-                str(claim.amount_raw) if claim.amount_raw else "",
-                claim.decimals,
-                claim.usd_price if claim.usd_price is not None else "",
-                claim.usd_value if claim.usd_value is not None else "",
-                claim.gas_usd if claim.gas_usd is not None else "",
-                claim.net_usd if claim.net_usd is not None else "",
-                claim.note or "",
-                claim.distributor,
-                claim.gas_units if claim.gas_units is not None else "",
-                claim.fee_per_gas if claim.fee_per_gas is not None else "",
-                claim.l1_fee_wei if claim.l1_fee_wei is not None else "",
-                claim.gas_estimate_quality,
-                claim.gas_cost_usd_buffered if claim.gas_cost_usd_buffered is not None else "",
-                claim.net_usd_raw if claim.net_usd_raw is not None else "",
-            ]
-        )
+        writer.writerow([
+            "claim",
+            claim.chain,
+            claim.wallet,
+            claim.name,
+            _status_label(claim),
+            str(claim.amount) if claim.amount_raw else "",
+            str(claim.amount_raw) if claim.amount_raw else "",
+            claim.decimals,
+            claim.usd_price if claim.usd_price is not None else "",
+            claim.usd_value if claim.usd_value is not None else "",
+            claim.gas_usd if claim.gas_usd is not None else "",
+            claim.net_usd if claim.net_usd is not None else "",
+            claim.note or "",
+            claim.distributor,
+            claim.gas_units if claim.gas_units is not None else "",
+            claim.fee_per_gas if claim.fee_per_gas is not None else "",
+            claim.l1_fee_wei if claim.l1_fee_wei is not None else "",
+            claim.gas_estimate_quality,
+            claim.gas_cost_usd_buffered if claim.gas_cost_usd_buffered is not None else "",
+            claim.net_usd_raw if claim.net_usd_raw is not None else "",
+        ])
     # Report-level metadata is emitted as one trailer row with kind="note"
     # so the header stays first and row-oriented consumers keep working.
-    writer.writerow(
-        ["note", "", "", "gas_estimate_note", "", "", "", "", "", "", "", "", GAS_ESTIMATE_NOTE, "", "", "", "", "", "", ""]
-    )
+    writer.writerow([
+        "note",
+        "",
+        "",
+        "gas_estimate_note",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        GAS_ESTIMATE_NOTE,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+    ])
     path.write_text(buffer.getvalue())
 
 

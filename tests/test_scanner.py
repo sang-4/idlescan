@@ -77,6 +77,7 @@ class ClaimStatusTests(unittest.TestCase):
         calldata = by_wallet[WALLET_UNCLAIMED].calldata
         self.assertIsNotNone(calldata)
         from idlescan.abi import decode, selector
+
         self.assertTrue(calldata.startswith("0x" + selector("claim(uint256,address,uint256,bytes32[])").hex()))
         types = ["uint256", "address", "uint256", "bytes32[]"]
         index, account, amount, proof = decode(types, calldata[10:])
@@ -120,13 +121,8 @@ class ClaimStatusTests(unittest.TestCase):
     def test_abi_leaf_encoding_autodetected(self):
         world = build_world()
         # Rebuild the world's root with abi.encode leaves and matching proofs.
-        statements = [
-            (account, amount) for account, amount in world.claims
-        ]
-        leaves = [
-            leaf_hash(i, account, amount, encoding="abi")
-            for i, (account, amount) in enumerate(statements)
-        ]
+        statements = [(account, amount) for account, amount in world.claims]
+        leaves = [leaf_hash(i, account, amount, encoding="abi") for i, (account, amount) in enumerate(statements)]
         world.root = compute_root(leaves)
         dataset = make_dataset(world, encoding="abi")
         report, scanner = run(world, dataset)

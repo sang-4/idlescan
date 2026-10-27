@@ -35,17 +35,11 @@ class ApiSecurityBase(unittest.TestCase):
             rate_limit_loopback=True,
             rate_limit_scan_per_ten_minutes=self.scan_limit,
         )
-        self.service = PlatformService(
-            self.settings, rpc_factory=lambda chain: MockRpc(build_world())
-        )
+        self.service = PlatformService(self.settings, rpc_factory=lambda chain: MockRpc(build_world()))
         self.service.seed_demo()
-        self.server = create_server(
-            self.service, self.settings, warnings=self.settings.validate()
-        )
+        self.server = create_server(self.service, self.settings, warnings=self.settings.validate())
         self.port = self.server.server_address[1]
-        self.thread = threading.Thread(
-            target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-        )
+        self.thread = threading.Thread(target=self.server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
         self.thread.start()
 
     def tearDown(self):
@@ -70,15 +64,11 @@ class ApiSecurityBase(unittest.TestCase):
             with urllib.request.urlopen(request, timeout=15) as response:
                 raw = response.read()
                 status = response.status
-                response_headers = {
-                    key.lower(): value for key, value in response.headers.items()
-                }
+                response_headers = {key.lower(): value for key, value in response.headers.items()}
         except urllib.error.HTTPError as exc:
             raw = exc.read()
             status = exc.code
-            response_headers = {
-                key.lower(): value for key, value in exc.headers.items()
-            }
+            response_headers = {key.lower(): value for key, value in exc.headers.items()}
         try:
             payload = json.loads(raw)
         except (ValueError, TypeError):
@@ -99,9 +89,7 @@ class AuthTests(ApiSecurityBase):
         self.assertIn("bearer", headers["www-authenticate"].lower())
 
     def test_wrong_token_is_rejected(self):
-        status, payload, _ = self.http(
-            "/api/config", headers={"authorization": "Bearer wrong"}
-        )
+        status, payload, _ = self.http("/api/config", headers={"authorization": "Bearer wrong"})
         self.assertEqual(status, 401)
 
     def test_correct_token_is_accepted(self):
@@ -136,9 +124,7 @@ class RateLimitTests(ApiSecurityBase):
         for _ in range(2):
             status, _, _ = self.http("/api/check", method="POST", body={"address": "0x" + "11" * 20})
             self.assertNotEqual(status, 429)
-        status, payload, headers = self.http(
-            "/api/check", method="POST", body={"address": "0x" + "11" * 20}
-        )
+        status, payload, headers = self.http("/api/check", method="POST", body={"address": "0x" + "11" * 20})
         self.assertEqual(status, 429)
         self.assertEqual(payload["code"], "rate_limited")
         self.assertIn("retry-after", headers)
@@ -173,9 +159,7 @@ class BodyLimitTests(ApiSecurityBase):
         self.assertEqual(payload["code"], "unsupported_media_type")
 
     def test_malformed_json_is_400(self):
-        status, payload, _ = self.http(
-            "/api/check", method="POST", body=b"{not json", headers={"x-idlescan": "1"}
-        )
+        status, payload, _ = self.http("/api/check", method="POST", body=b"{not json", headers={"x-idlescan": "1"})
         self.assertEqual(status, 400)
         self.assertIn("invalid JSON", payload["error"])
 
@@ -189,7 +173,9 @@ class LockdownTests(ApiSecurityBase):
 
     def post(self, path, body=None):
         return self.http(
-            path, method="POST", body={} if body is None else body,
+            path,
+            method="POST",
+            body={} if body is None else body,
             headers={"x-idlescan": "1"},
         )
 
@@ -219,9 +205,7 @@ class LockdownTests(ApiSecurityBase):
                 self.assertEqual(payload["code"], "lockdown")
 
     def test_check_and_reads_still_work(self):
-        status, payload, _ = self.post(
-            "/api/check", {"address": "0x1111111111111111111111111111111111111111"}
-        )
+        status, payload, _ = self.post("/api/check", {"address": "0x1111111111111111111111111111111111111111"})
         self.assertEqual(status, 200)
         self.assertTrue(payload["claims"])
         status, _, _ = self.http("/api/portfolio")

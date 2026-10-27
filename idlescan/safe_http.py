@@ -101,9 +101,7 @@ def validate_url(
     if scheme not in ("https", "http"):
         raise BlockedURL(f"unsupported URL scheme {scheme or '(none)'!r}")
     if scheme == "http" and not allow_http:
-        raise BlockedURL(
-            "only https URLs are allowed (set IDLESCAN_ALLOW_HTTP_FETCH=true for local fixtures)"
-        )
+        raise BlockedURL("only https URLs are allowed (set IDLESCAN_ALLOW_HTTP_FETCH=true for local fixtures)")
     if parts.username or parts.password:
         raise BlockedURL("URLs with embedded credentials are refused")
     host = (parts.hostname or "").lower()
@@ -145,9 +143,7 @@ def validate_url(
     if not allow_http:
         for address in addresses:
             if not _is_public(address):
-                raise BlockedURL(
-                    f"{host} resolves to non-public address {address}; refusing to connect"
-                )
+                raise BlockedURL(f"{host} resolves to non-public address {address}; refusing to connect")
     return addresses[0]
 
 
@@ -263,8 +259,7 @@ def safe_fetch(
         if content_types is not None:
             if not _content_type_ok(response_headers.get("content-type"), allowed):
                 raise UnsupportedContentType(
-                    f"{current} returned {response_headers.get('content-type')!r}; "
-                    f"allowed: {', '.join(allowed)}"
+                    f"{current} returned {response_headers.get('content-type')!r}; allowed: {', '.join(allowed)}"
                 )
         if status in (301, 302, 303, 307, 308):
             location = response_headers.get("location")

@@ -108,9 +108,7 @@ class OverrideTests(unittest.TestCase):
     def test_prepare_rpc_uses_quorum_two_when_available(self):
         from idlescan.service import PlatformService
 
-        settings = Settings(
-            rpc_overrides={"ethereum": ["https://a.example.org", "https://b.example.org"]}
-        )
+        settings = Settings(rpc_overrides={"ethereum": ["https://a.example.org", "https://b.example.org"]})
         chains, _, _ = build_config()
         chain = chains.get("ethereum")
         # Inspect the factory decision without starting a server or touching network.
