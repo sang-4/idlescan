@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "idlescan"
-version = "1.1.0"
+version = "1.2.0"
 description = "Self-hosted airdrop research desk: idle balances, unclaimed allocations and gas-adjusted claim planning (read-only by default)"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -259,7 +259,7 @@ class DoctorCliTests(unittest.TestCase):
         payload = json.loads(out)
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["warnings"], 1)
-        self.assertEqual(payload["version"], "1.1.0")
+        self.assertEqual(payload["version"], "1.2.0")
 
     def test_text_output_lists_checks(self):
         code, out, _ = run_cli(

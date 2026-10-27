@@ -75,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--markdown", action="store_true")
 
     doctor = sub.add_parser("doctor", help="check configuration, database and (optionally) RPC endpoints")
+    doctor.add_argument("--offline", action="store_true", help="offline mode: no RPC or HTTP request (default)")
     doctor.add_argument("--online", action="store_true", help="probe configured RPC endpoints")
     doctor.add_argument("--json", action="store_true")
     doctor.add_argument("--env-file", type=Path)
@@ -411,7 +412,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         settings = settings.with_overrides(db_path=args.db)
     report = run_doctor(
         settings,
-        online=bool(args.online),
+        online=bool(args.online) and not bool(args.offline),
         chains_file=getattr(args, "chains_file", None),
         tokens_file=getattr(args, "tokens_file", None),
     )

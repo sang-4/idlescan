@@ -127,7 +127,7 @@ class ObservabilityApiTests(unittest.TestCase):
         self.assertGreaterEqual(payload["requests"]["total"], 1)
         self.assertIn("uptime_seconds", payload)
         self.assertEqual(payload["database"]["up_to_date"], True)
-        self.assertEqual(payload["version"], "1.1.0")
+        self.assertEqual(payload["version"], "1.2.0")
 
     def test_metrics_bucket_wallet_addresses(self):
         address = "0x" + "11" * 20
