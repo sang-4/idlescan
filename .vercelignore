@@ -1,0 +1,22 @@
+# idlescan Desk is a self-hosted local tool — do not deploy to Vercel.
+# Ignore local runtime data and secrets; keep the api/ entrypoint so Vercel can
+# serve the guardrail refusal page instead of a confusing build error.
+
+# Local runtime data and secrets (never deploy)
+data/
+*.db
+*.db-wal
+*.db-shm
+.env
+.venv/
+
+# Built artefacts (never deploy)
+dist/
+build/
+release/
+.eggs/
+*.egg-info/
+
+# Git
+.git/
+.gitignore
