@@ -577,7 +577,7 @@ def cmd_tokens(args: argparse.Namespace) -> int:
         override = getattr(args, "db", None)
         if override:
             settings = settings.with_overrides(db_path=override)
-        db = Database(settings.db_path)
+        db = Database(settings.db_path).init()
         custom = db.list_custom_tokens(args.chain)
         keys = [args.chain.lower()] if args.chain else sorted(tokens)
         if args.json:

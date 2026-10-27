@@ -7,8 +7,9 @@ from pathlib import Path
 from idlescan.api import build_router
 from idlescan.config import load_settings
 
-API_DOC = Path("docs/API.md")
-CONFIG_DOC = Path("docs/CONFIGURATION.md")
+ROOT = Path(__file__).resolve().parent.parent
+API_DOC = ROOT / "docs" / "API.md"
+CONFIG_DOC = ROOT / "docs" / "CONFIGURATION.md"
 
 
 class ApiDocSyncTests(unittest.TestCase):
