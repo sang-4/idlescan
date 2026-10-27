@@ -879,6 +879,11 @@ def run(settings: Settings, *, service: PlatformService | None = None) -> int:
     service = service or PlatformService(settings)
     if settings.demo:
         service.seed_demo()
+    else:
+        removed = service.purge_demo_data()
+        if any(removed.values()):
+            summary = ", ".join(f"{count} {name}" for name, count in removed.items() if count)
+            logger.info("removed leftover demo data: %s", summary)
     server = create_server(service, settings, warnings=warnings)
     host, port = server.server_address[0], server.server_address[1]
     url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host

@@ -285,7 +285,7 @@ All settings are optional except the toggle. Environment variables win over `.en
 | `IDLESCAN_ALLOW_REMOTE_WRITE` | `false` | permit write mode on a non-loopback host |
 | `IDLESCAN_LOCKDOWN` | `false` | refuse local administrative writes; reads and exports still work |
 | `IDLESCAN_DATASET_DIR` | — | extra directory for claim datasets |
-| `IDLESCAN_DEMO` | `false` | seed/use synthetic demo data |
+| `IDLESCAN_DEMO` | `false` | seed/use synthetic demo data in a separate `idlescan-demo.db` |
 
 Chain and token metadata live in `idlescan/data/chains.json` and
 `idlescan/data/tokens.json`. Replace `rpcs` with your own provider for speed; every

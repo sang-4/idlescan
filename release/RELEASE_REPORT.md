@@ -5,8 +5,8 @@
 - **Release date:** 2026-10-27
 - **Price:** $39 launch (list $49), 14-day refund window
 - **Licence:** proprietary single-user (draft; see owner actions)
-- **Archive:** `release/dist/idlescan-desk-1.2.0.zip`, 419,200 bytes
-- **SHA-256:** `928e4979d47a31ee5674863aa3f6804dc130e3dc528150cfa970b459ecc990df`
+- **Archive:** `release/dist/idlescan-desk-1.2.0.zip`, 423,435 bytes
+- **SHA-256:** `9f98becd63032e215980b55b963773d74212e916db836f9cf73984a07ebfaf57`
 
 > **Scope decision.** The brief assumed a v1.1.0 baseline with 148 tests and a
 > non-git workspace. The actual workspace was already a git repository on branch
@@ -24,7 +24,7 @@
 | R-02 Version and changelog | Complete | `3c3ec07` | version 1.2.0 in `pyproject.toml` + `idlescan/__init__.py`; matching-version test; `CHANGELOG.md` 1.2.0 |
 | R-03 Honest gas labelling | Complete | `3c3ec07` | `GAS_ESTIMATE_NOTE` in `idlescan/gas.py`; CLI footer, JSON, CSV trailer, Markdown, `/api/config`, Claims view; `tests/test_report.py` |
 | R-04 In-product disclaimer | Complete | `3c3ec07` | `DISCLAIMER` in CLI/Markdown; Settings view; README; `tests/test_report.py`, `tests/test_api.py` |
-| R-05 Network exposure guard | Complete | `3c3ec07` | `idlescan/config.py` `validate()`; startup warning; non-dismissable UI banner; loopback/refusal/override/exit-2 tests |
+| R-05 Network exposure guard | Complete | `3c3ec07` | `idlescan/config.py` `validate()`; startup warning; dismissible UI banner; loopback/refusal/override/exit-2 tests |
 | R-06 `idlescan about` | Complete | `3c3ec07` | `idlescan/about.py`, `cmd_about`; 10 tests incl. a secret-in-environment test |
 | R-07 Release build script and archive | Complete | `b427647` | `scripts/build_release.py`; deterministic zip + `.sha256`; excluded-file and placeholder gates |
 | R-08 Buyer documentation | Complete | `b427647` | `QUICKSTART.md`, `TRUST.md`, `SUPPORT.md`, `docs/ROADMAP.md`; honest data section in README/QUICKSTART |
@@ -39,7 +39,7 @@
 
 | Metric | Value |
 | --- | --- |
-| Tests | **388 passing**, 1 skipped (`sort_pairs=False` variant) |
+| Tests | **395 passing**, 1 skipped (`sort_pairs=False` variant) |
 | Suite runtime | ~118 s, offline, single core |
 | Skipped | 1 |
 | Coverage | **Not measured.** No coverage tool is installed and the brief's gates did not require it; no number is claimed. |
@@ -55,13 +55,28 @@
 
 ## Quality gate evidence
 
+> **Post-verification fix.** A buyer-visible defect was found after the first
+> verification pass: setting `IDLESCAN_DEMO=false` left the seeded demo wallets,
+> airdrop and snapshots in the database, so the UI kept showing synthetic data.
+> The fix is described below; the suite grew from 388 to 395 tests and the archive
+> was rebuilt, so the hash above supersedes the earlier value.
+
 **Full suite**
 
 ```text
 $ python3 -m unittest discover -s tests
-Ran 388 tests in 118.217s
+Ran 395 tests in 121.124s
 
 OK (skipped=1)
+```
+
+**Demo-mode regression tests** (added with the post-verification fix):
+
+```text
+$ python3 -m unittest tests.test_demo_mode
+Ran 7 tests in 1.129s
+
+OK
 ```
 
 **Self-test**
@@ -77,8 +92,8 @@ This demo used a mock chain with zero network calls.
 
 ```text
 $ python3 scripts/build_release.py
-archive: .../release/dist/idlescan-desk-1.2.0.zip (419,200 bytes)
-sha256:  928e4979d47a31ee5674863aa3f6804dc130e3dc528150cfa970b459ecc990df
+archive: .../release/dist/idlescan-desk-1.2.0.zip (423,435 bytes)
+sha256:  9f98becd63032e215980b55b963773d74212e916db836f9cf73984a07ebfaf57
 ```
 
 Archive contents: `START_HERE.txt`, `LICENSE`, `NOTICE`, `THIRD_PARTY.md`,
@@ -130,8 +145,8 @@ repository-wide; the new modules are typed.
 
 1. **Remote binds are refused by default.** A non-loopback host needs
    `IDLESCAN_AUTH_TOKEN` or `IDLESCAN_ALLOW_INSECURE_REMOTE=true`; the override is
-   warned at startup and shows a persistent UI banner. Write mode has a second
-   guard (`IDLESCAN_ALLOW_REMOTE_WRITE`).
+   warned at startup and shows a UI banner (dismissible for the tab session). Write
+   mode has a second guard (`IDLESCAN_ALLOW_REMOTE_WRITE`).
 2. **Licence is proprietary.** The MIT licence and all MIT references are gone.
 3. **Default database location** moved from next to the installed package to
    `<cwd>/data/idlescan.db` when `IDLESCAN_DB` is unset. Explicit relative paths
@@ -144,6 +159,10 @@ repository-wide; the new modules are typed.
 7. **`idlescan --version`** now exists; `idlescan tokens --chain …` works again
    without the `list` subcommand.
 8. **`/api/config`** gained `insecure_remote`, `gas_estimate_note`, `disclaimer`.
+9. **Demo mode no longer touches the real database.** `serve --demo` uses
+   `idlescan-demo.db` unless `--db` is passed, and a normal start removes leftover
+   demo wallets, the `demo` airdrop and scans made entirely of demo addresses.
+   All banners (including the insecure-remote warning) and toasts are dismissible.
 
 ## Owner action list
 
@@ -197,3 +216,4 @@ repository-wide; the new modules are typed.
 | Docker / CI | Written earlier in the v1.2 sprint; not re-executed against the final tree. |
 | mypy | Repository-wide mypy is lenient and pre-existing code has known errors; new modules are clean. |
 | Line-count metric | The earlier v1.2 report's line count was corrected to the measured 11,518. |
+| Demo-mode fix | Applied after the first verification pass (see the note above); archive rebuilt and hash refreshed. |

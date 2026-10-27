@@ -1566,6 +1566,21 @@ class PlatformService:
         return removed
 
     # ------------------------------------------------------------------ demo
+    def purge_demo_data(self) -> dict[str, int]:
+        """Remove leftover demo rows when demo mode is off.
+
+        Returns per-table counts.  Safe to call on every normal start: if there
+        is nothing demo-related, every count is zero.
+        """
+        from .selftest import WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED
+
+        counts = self.db.purge_demo_records(
+            [WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED]
+        )
+        if any(counts.values()):
+            self.db.log("system", "demo.purge", json.dumps(counts, sort_keys=True))
+        return counts
+
     def seed_demo(self) -> None:
         if self.db.latest_snapshot() or self.db.list_wallets():
             return

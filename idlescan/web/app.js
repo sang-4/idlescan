@@ -231,13 +231,18 @@
     const root = $("#toasts");
     const node = document.createElement("div");
     node.className = `toast ${kind === "err" ? "err" : "ok"}`;
-    node.innerHTML = `<div class="grow"><strong>${esc(title)}</strong>${body ? `<div class="t-body">${esc(body)}</div>` : ""}</div>`;
+    node.innerHTML = `<div class="grow"><strong>${esc(title)}</strong>${body ? `<div class="t-body">${esc(body)}</div>` : ""}</div><button class="toast-x" type="button" aria-label="Dismiss notification">×</button>`;
     root.appendChild(node);
-    setTimeout(() => {
+    let closed = false;
+    const close = () => {
+      if (closed) return;
+      closed = true;
       node.style.opacity = "0";
-      node.style.transition = "opacity .25s";
-      setTimeout(() => node.remove(), 260);
-    }, kind === "err" ? 8000 : 4500);
+      node.style.transition = "opacity .2s";
+      setTimeout(() => node.remove(), 210);
+    };
+    node.querySelector(".toast-x").addEventListener("click", close);
+    setTimeout(close, kind === "err" ? 8000 : 4500);
   }
 
   async function copyText(text, label = "Copied to clipboard") {
@@ -514,13 +519,32 @@
   }
 
   // ------------------------------------------------------------- app state
+  const DISMISSED_KEY = "idlescan.dismissed";
+
+  function loadDismissed() {
+    try {
+      const raw = sessionStorage.getItem(DISMISSED_KEY);
+      return new Set(raw ? JSON.parse(raw) : []);
+    } catch {
+      return new Set();
+    }
+  }
+
+  function saveDismissed(set) {
+    try {
+      sessionStorage.setItem(DISMISSED_KEY, JSON.stringify([...set]));
+    } catch {
+      // Private mode or storage disabled: dismissal still works for this page.
+    }
+  }
+
   const state = {
     config: null,
     stats: null,
     route: "overview",
     portfolio: null,
     scanTimer: null,
-    dismissed: new Set(),
+    dismissed: loadDismissed(),
   };
 
   const filters = {
@@ -611,11 +635,12 @@
       <div class="banner ${item.cls}" data-banner="${esc(item.kind)}">
         <span aria-hidden="true">${item.icon}</span>
         <span class="grow">${item.text}</span>
-        ${item.kind === "insecure-remote" ? "" : `<button class="banner-x" type="button" data-dismiss="${esc(item.kind)}" aria-label="Dismiss">×</button>`}
+        <button class="banner-x" type="button" data-dismiss="${esc(item.kind)}" aria-label="Dismiss">×</button>
       </div>`).join("");
     $$("[data-dismiss]").forEach((button) => {
       button.addEventListener("click", () => {
         state.dismissed.add(button.dataset.dismiss);
+        saveDismissed(state.dismissed);
         renderBanners();
       });
     });

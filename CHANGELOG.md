@@ -84,6 +84,15 @@
 
 ### Fixed
 
+- **Demo mode leaked into the real database.** Seeded demo wallets, the `demo-merkle`
+  airdrop and demo snapshots were written to the normal database and survived setting
+  `IDLESCAN_DEMO=false`, so the UI kept showing a synthetic portfolio. Demo mode now uses
+  its own database (`idlescan-demo.db`) by default, and a normal start removes leftover
+  demo rows that older builds wrote. Real wallets, user airdrops and real snapshots are
+  never touched.
+- **Banners and toasts are dismissible.** Every banner, including the insecure-remote
+  warning, now has a close button; dismissal persists for the browser-tab session.
+  Toasts gained a close button instead of only timing out.
 - Single-leaf merkle proof-mode detection (empty proof is verifiable).
 - Amount parsing errors for non-integer decimal strings are now named with the address.
 - `idlescan doctor` no longer modifies the database (read-only checks).

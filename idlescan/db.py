@@ -144,6 +144,148 @@ class Database:
             )
         return cursor.rowcount > 0
 
+    def purge_demo_records(self, demo_addresses: Sequence[str]) -> dict[str, int]:
+        """Remove data created by demo mode.
+
+        Demo mode seeds three wallets, a ``demo`` airdrop and snapshots of the
+        synthetic portfolio.  Those rows used to survive turning ``IDLESCAN_DEMO``
+        off, so the UI kept showing a fake portfolio.  This removes only records
+        that can be attributed to demo mode:
+
+        * the three known demo wallet addresses;
+        * airdrops whose ``source`` is ``demo``;
+        * snapshots triggered by demo mode, or whose wallet set is entirely demo
+          addresses (these are scans of the synthetic wallets).
+
+        A real wallet or a user-added airdrop is never touched.
+        """
+        addresses = {str(address).lower() for address in demo_addresses}
+        counts = {
+            "wallets": 0,
+            "airdrops": 0,
+            "snapshots": 0,
+            "alerts": 0,
+            "notifications": 0,
+            "executions": 0,
+        }
+        with self.connect() as connection:
+            if addresses:
+                placeholders = ",".join("?" for _ in addresses)
+                cursor = connection.execute(
+                    f"DELETE FROM wallets WHERE lower(address) IN ({placeholders})",
+                    tuple(addresses),
+                )
+                counts["wallets"] = max(cursor.rowcount, 0)
+
+            demo_drop_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT id FROM airdrops WHERE source = 'demo'"
+                ).fetchall()
+            ]
+
+            snapshot_ids: list[int] = []
+            for row in connection.execute("SELECT id, wallets, trigger FROM snapshots").fetchall():
+                try:
+                    wallets = json.loads(row["wallets"])
+                except (TypeError, ValueError):
+                    wallets = []
+                wallets = [str(wallet).lower() for wallet in wallets]
+                only_demo = bool(wallets) and all(wallet in addresses for wallet in wallets)
+                if row["trigger"] == "demo" or only_demo:
+                    snapshot_ids.append(int(row["id"]))
+
+            alert_ids: set[int] = set()
+            if snapshot_ids:
+                placeholders = ",".join("?" for _ in snapshot_ids)
+                alert_ids.update(
+                    row[0]
+                    for row in connection.execute(
+                        f"SELECT id FROM alerts WHERE snapshot_id IN ({placeholders})",
+                        tuple(snapshot_ids),
+                    ).fetchall()
+                )
+            if demo_drop_ids:
+                placeholders = ",".join("?" for _ in demo_drop_ids)
+                alert_ids.update(
+                    row[0]
+                    for row in connection.execute(
+                        f"SELECT id FROM alerts WHERE drop_id IN ({placeholders})",
+                        tuple(demo_drop_ids),
+                    ).fetchall()
+                )
+            if alert_ids:
+                placeholders = ",".join("?" for _ in alert_ids)
+                counts["notifications"] = max(
+                    connection.execute(
+                        f"DELETE FROM notifications WHERE alert_id IN ({placeholders})",
+                        tuple(alert_ids),
+                    ).rowcount,
+                    0,
+                )
+                counts["alerts"] = max(
+                    connection.execute(
+                        f"DELETE FROM alerts WHERE id IN ({placeholders})",
+                        tuple(alert_ids),
+                    ).rowcount,
+                    0,
+                )
+
+            if snapshot_ids:
+                placeholders = ",".join("?" for _ in snapshot_ids)
+                connection.execute(
+                    f"DELETE FROM holdings WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM claims WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM alerts WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                counts["snapshots"] = max(
+                    connection.execute(
+                        f"DELETE FROM snapshots WHERE id IN ({placeholders})",
+                        tuple(snapshot_ids),
+                    ).rowcount,
+                    0,
+                )
+
+            if demo_drop_ids:
+                placeholders = ",".join("?" for _ in demo_drop_ids)
+                connection.execute(
+                    f"DELETE FROM claims WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM dataset_provenance WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM executions WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+            if addresses:
+                placeholders = ",".join("?" for _ in addresses)
+                counts["executions"] += max(
+                    connection.execute(
+                        f"DELETE FROM executions WHERE lower(wallet) IN ({placeholders})",
+                        tuple(addresses),
+                    ).rowcount,
+                    0,
+                )
+                connection.execute(
+                    f"DELETE FROM alerts WHERE lower(wallet) IN ({placeholders})",
+                    tuple(addresses),
+                )
+            counts["airdrops"] = max(
+                connection.execute("DELETE FROM airdrops WHERE source = 'demo'").rowcount,
+                0,
+            )
+        return counts
+
     def set_airdrop_enabled(self, drop_id: str, enabled: bool) -> bool:
         with self.connect() as connection:
             cursor = connection.execute(

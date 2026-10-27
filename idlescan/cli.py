@@ -732,6 +732,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
         db_path=args.db,
         demo=True if args.demo else None,
     )
+    if settings.demo and args.db is None:
+        # Keep the synthetic portfolio out of the real database.  Demo mode used
+        # to seed wallets and snapshots into the normal DB, which then survived
+        # turning IDLESCAN_DEMO off.  Pass --db to choose a location explicitly.
+        demo_path = settings.db_path.with_name("idlescan-demo.db")
+        settings = settings.with_overrides(db_path=demo_path)
+        print(f"demo database: {demo_path} (pass --db to override)")
     try:
         return run(settings)
     except Exception as exc:  # noqa: BLE001 - friendly startup failure

@@ -129,6 +129,11 @@ idlescan serve --demo
 Open <http://127.0.0.1:8787>. Every screen is populated with synthetic data.
 Stop the server with `Ctrl-C`.
 
+Demo mode uses its own database next to the configured one (`idlescan-demo.db`), so
+the synthetic portfolio never mixes with real wallets. Pass `--db <path>` if you want
+a different demo location. Starting the server without demo mode removes any leftover
+demo rows from older builds; your own wallets and airdrops are left alone.
+
 Use demo mode to learn the interface before touching a real address.
 
 ## 7. Configure the database and an RPC endpoint
@@ -217,6 +222,7 @@ See README → "Adding an airdrop" for the three supported eligibility shapes
 
 - **Database:** the path in `IDLESCAN_DB` (default `data/idlescan.db` under the
   current working directory). One SQLite file plus `-wal`/`-shm` while running.
+  Demo mode uses a separate `idlescan-demo.db` beside it unless you pass `--db`.
 - **Backups:** `idlescan backup --out <folder>` or Settings → Maintenance.
   Backups are local; nothing is uploaded.
 - **Exports:** `idlescan export --format json|csv|md --out <path>`.

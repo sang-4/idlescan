@@ -14,7 +14,7 @@ root. Command-line flags (`--env-file`, `--db`, `--host`, `--port`) override env
 | `IDLESCAN_CHAINS` | (all) | Comma-separated chain keys to scan; empty means all configured chains. |
 | `IDLESCAN_MIN_USD` | `1.0` | Hide balances below this USD value. |
 | `IDLESCAN_REFRESH_MINUTES` | `0` | Auto-rescan interval in minutes; 0 = manual only. |
-| `IDLESCAN_DEMO` | `false` | Seed a synthetic demo portfolio on startup (no network). |
+| `IDLESCAN_DEMO` | `false` | Seed a synthetic demo portfolio on startup (no network). Demo mode uses `idlescan-demo.db` beside the configured database unless `--db` is passed; turning it off removes leftover demo rows. |
 | `IDLESCAN_DATASET_DIR` | (none) | Extra directory to search for merkle claim datasets. |
 
 ## Safety: Claim Hand-off, Authentication, Remote Access

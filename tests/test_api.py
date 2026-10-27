@@ -115,6 +115,10 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers["content-type"])
         self.assertIn(b"prepareClaim", payload)
+        # Banners and toasts must keep a manual dismiss control.
+        self.assertIn(b"toast-x", payload)
+        self.assertIn(b"data-dismiss", payload)
+        self.assertIn(b"saveDismissed", payload)
 
         status, payload, headers = self.http("/app.css")
         self.assertEqual(status, 200)

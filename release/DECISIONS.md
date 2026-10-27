@@ -24,8 +24,9 @@ One line each. "Owner" marks a decision the owner made during this sprint.
    report-level rather than per-row.
 8. **`/api/config` gains three additive fields**: `insecure_remote`,
    `gas_estimate_note`, `disclaimer`.
-9. **The insecure-remote banner cannot be dismissed**; all other banners keep
-   their dismiss button. An insecure bind should stay visible.
+9. **Every banner is dismissible, including the insecure-remote warning.**
+   Dismissal is remembered for the browser-tab session, so a reload does not
+   resurrect it. Toasts also gained a close button.
 10. **`about` reduces an absolute database path to its filename** and never emits
     RPC URLs, tokens, environment values or wallet addresses.
 11. **Legacy `idlescan tokens --chain …` flags restored** on the parent parser;
@@ -58,3 +59,12 @@ One line each. "Owner" marks a decision the owner made during this sprint.
     and is not part of the release archive.
 23. **`docker build` was not re-run** after the final tree changes; container
     files are shipped as documentation, not as verified artefacts.
+24. **Demo mode is isolated.** `serve --demo` uses `idlescan-demo.db` beside the
+    configured database unless `--db` is given, so the synthetic portfolio cannot
+    pollute real data. A normal start purges demo-seeded wallets, the `demo` airdrop
+    and scans of the demo wallets; it never deletes a real wallet, user airdrop or
+    mixed snapshot.
+25. **Leftover demo data is removed automatically**, because the old banner promised
+    that restarting without demo mode would let the buyer use their own wallets. Only
+    the three known demo addresses, `source='demo'` airdrops and snapshots made
+    entirely of demo addresses are eligible.

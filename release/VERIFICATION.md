@@ -92,9 +92,10 @@ content-security-policy: default-src 'self'; script-src 'self'; style-src 'self'
 -- health payload --
 {"status": "ok", "version": "1.2.0", "uptime_seconds": 0.377, "read_only": true, "claim_handoff": false, "local_edits": true, "lockdown": false, "database": {"schema_version": 2, "latest_schema_version": 2, "pending_migrations": 0, "up_to_date": true, "size_bytes": 131072}, "requests": {"total": 7, "in_flight": 1, "errors": 0, "unauthorized": 0, "rate_limited": 0, "overflowed_paths": 0, "last_status": 200, "last_at": "2026-10-27T09:26:45+00:00", "by_method": {"GET": 7}, "by_status": {"2xx": 7}}, "rpc": []}
 -- server log --
-2026-10-27 02:26:45,268 INFO idlescan.api listening on http://127.0.0.1:8877/ (read_only=True)
+2026-10-27 02:54:58,133 INFO idlescan.api listening on http://127.0.0.1:8877/ (read_only=True)
+demo database: /tmp/idlescan-buyer/idlescan-demo.db (pass --db to override)
 idlescan 1.2.0  ·  http://127.0.0.1:8877
-claim hand-off: disabled   local edits: allowed   db: /tmp/idlescan-buyer/buyer.db
+claim hand-off: disabled   local edits: allowed   db: /tmp/idlescan-buyer/idlescan-demo.db
 auth: none (loopback only)
 log:  INFO text
 press ctrl-c to stop
@@ -117,9 +118,12 @@ Covered:
   dependency resolution (`pip show` confirms an empty `Requires:`).
 - `--version`, `about --json`, offline `selftest`.
 - Demo server on an explicit port, with 200 responses for the five endpoints a
-  buyer touches first, plus the full security-header set.
+  buyer touches first, plus the full security-header set. The demo server writes
+  to `idlescan-demo.db`, not the configured real database.
 - Remote bind refusal with exit code 2.
 - Absence of `tests/` and the GPL fixture from both distributions.
+- Demo isolation and reversible demo data: `tests/test_demo_mode.py` (7 tests)
+  covers seeding, purge, idempotence, scans of demo wallets and the demo DB path.
 
 Not covered, and therefore not claimed:
 
