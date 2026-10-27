@@ -22,8 +22,13 @@ def redact_url(url: str) -> str:
     except ValueError:
         return "[invalid url]"
     host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
+    try:
+        if parts.port:
+            host = f"{host}:{parts.port}"
+    except ValueError:
+        # Port is not a valid integer (e.g. a format string like
+        # ``http://%s:%s`` that reached here without being formatted).
+        pass
     return urlunsplit((parts.scheme, host, parts.path or "/", "", ""))
 
 

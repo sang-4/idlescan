@@ -22,14 +22,11 @@ _CONFIGURED = False
 class RedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
-            record.msg = redact_text(record.msg)
-        if record.args:
-            if isinstance(record.args, dict):
-                record.args = {
-                    key: redact_text(value) if isinstance(value, str) else value for key, value in record.args.items()
-                }
-            else:
-                record.args = tuple(redact_text(value) if isinstance(value, str) else value for value in record.args)
+            # Format the message first so URL-like format placeholders
+            # (e.g. ``http://%s:%s`` in a listening banner) are not mistaken
+            # for real URLs by the redaction regex.
+            record.msg = redact_text(record.getMessage())
+            record.args = ()
         if record.exc_info and record.exc_info[1] is not None:
             record.msg = f"{record.msg} ({record.exc_info[1].__class__.__name__})"
             record.exc_info = None
