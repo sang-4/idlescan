@@ -70,6 +70,7 @@
 - Single-leaf merkle proof-mode detection (empty proof is verifiable).
 - Amount parsing errors for non-integer decimal strings are now named with the address.
 - `idlescan doctor` no longer modifies the database (read-only checks).
+- **Server startup crash**: `idlescan serve` crashed with `ValueError: Port could not be cast to integer value as '%s'` because the log redaction filter redacted the printf-style format string (`http://%s:%s`) before arguments were applied, mistaking the format placeholder for a URL with an invalid port. The filter now formats the message before redacting (`idlescan/log.py`), and `redact_url` is defensive against non-integer ports (`idlescan/redaction.py`).
 
 ### Security
 
