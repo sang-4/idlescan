@@ -14,7 +14,7 @@ from .chains import load_chains, load_tokens
 from .registry import load_registry
 from .scanner import Scanner, ScanReport
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __all__ = ["scan", "Scanner", "ScanReport", "__version__"]
 
 

@@ -3,7 +3,7 @@
 **Analysis date:** 2026-10-26  
 **Project version:** 1.1.0 (`pyproject.toml`, `idlescan/__init__.py`)  
 **Repository root:** `/home/devx/idlescan`  
-**License:** MIT  
+**License:** Proprietary single-user (see `LICENSE`)  
 **Analysis basis:** full source read, configuration/data review, `idlescan selftest`, and the complete test suite. No source files were modified.
 
 ---

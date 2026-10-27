@@ -1,7 +1,8 @@
 """SQLite persistence.
 
-One file, no ORM, no migrations framework - `init()` is idempotent and the schema
-version is tracked in `meta` so future changes can be applied in place.
+One file, no ORM. Schema changes are applied by the ordered migrations in
+:mod:`idlescan.migrations`; opening an existing database creates a backup before
+the first upgrade and refuses files written by a newer release.
 """
 
 from __future__ import annotations
@@ -10,137 +11,14 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-SCHEMA_VERSION = 1
+from .migrations import LATEST_SCHEMA_VERSION, apply_migrations, schema_version
+from .redaction import redact_text
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS meta (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS wallets (
-    address TEXT PRIMARY KEY,
-    label TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    archived INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS airdrops (
-    id TEXT PRIMARY KEY,
-    payload TEXT NOT NULL,
-    enabled INTEGER NOT NULL DEFAULT 1,
-    source TEXT NOT NULL DEFAULT 'registry',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,
-    status TEXT NOT NULL,
-    message TEXT NOT NULL DEFAULT '',
-    progress REAL NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    finished_at TEXT,
-    error TEXT,
-    result TEXT
-);
-
-CREATE TABLE IF NOT EXISTS snapshots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    chains TEXT NOT NULL,
-    wallets TEXT NOT NULL,
-    trigger TEXT NOT NULL DEFAULT 'manual',
-    totals TEXT NOT NULL,
-    report TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS holdings (
-    snapshot_id INTEGER NOT NULL,
-    chain TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    asset TEXT NOT NULL,
-    asset_address TEXT,
-    decimals INTEGER NOT NULL,
-    raw TEXT NOT NULL,
-    usd_price REAL,
-    usd_value REAL
-);
-
-CREATE TABLE IF NOT EXISTS claims (
-    snapshot_id INTEGER NOT NULL,
-    drop_id TEXT NOT NULL,
-    name TEXT NOT NULL,
-    chain TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    distributor TEXT NOT NULL,
-    status TEXT NOT NULL,
-    expired INTEGER NOT NULL DEFAULT 0,
-    deadline TEXT,
-    amount_raw TEXT NOT NULL DEFAULT '0',
-    decimals INTEGER NOT NULL DEFAULT 18,
-    token TEXT,
-    usd_price REAL,
-    usd_value REAL,
-    gas_native REAL,
-    gas_usd REAL,
-    net_usd REAL,
-    proof_verified INTEGER,
-    eligibility_source TEXT,
-    note TEXT,
-    calldata TEXT
-);
-
-CREATE TABLE IF NOT EXISTS alerts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    wallet TEXT,
-    drop_id TEXT,
-    snapshot_id INTEGER,
-    acknowledged INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS executions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    wallet TEXT NOT NULL,
-    drop_id TEXT NOT NULL,
-    chain TEXT NOT NULL,
-    tx_hash TEXT,
-    status TEXT NOT NULL,
-    detail TEXT
-);
-
-CREATE TABLE IF NOT EXISTS audit (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    created_at TEXT NOT NULL,
-    actor TEXT NOT NULL,
-    action TEXT NOT NULL,
-    detail TEXT NOT NULL DEFAULT ''
-);
-
-CREATE INDEX IF NOT EXISTS idx_claims_snapshot ON claims(snapshot_id);
-CREATE INDEX IF NOT EXISTS idx_claims_wallet ON claims(wallet);
-CREATE INDEX IF NOT EXISTS idx_holdings_snapshot ON holdings(snapshot_id);
-CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
-DROP INDEX IF EXISTS idx_alerts_unique;
-DELETE FROM alerts WHERE id NOT IN (
-    SELECT MIN(id) FROM alerts
-    GROUP BY kind, IFNULL(wallet,''), IFNULL(drop_id,''), title
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_alerts_unique
-    ON alerts(kind, IFNULL(wallet,''), IFNULL(drop_id,''), title);
-"""
+SCHEMA_VERSION = LATEST_SCHEMA_VERSION
 
 
 def now() -> str:
@@ -172,15 +50,27 @@ class Database:
             connection.close()
 
     def init(self) -> "Database":
-        with self._lock, self.connect() as connection:
-            connection.executescript(SCHEMA)
-            connection.execute(
-                "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (str(SCHEMA_VERSION),),
-            )
+        """Open the database and apply any pending migrations."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with sqlite3.connect(self.path, timeout=15) as connection:
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA journal_mode=WAL")
+                connection.execute("PRAGMA busy_timeout=5000")
+                applied = apply_migrations(connection, self.path)
+                connection.commit()
+            self.applied_migrations = applied
         self._initialised = True
         return self
+
+    def schema_version(self) -> int:
+        with self.connect() as connection:
+            return schema_version(connection)
+
+    def vacuum(self) -> None:
+        with self._lock:
+            with sqlite3.connect(self.path) as connection:
+                connection.execute("VACUUM")
 
     # -------------------------------------------------------------- wallets
     def add_wallet(self, address: str, label: str = "", tags: str = "") -> dict:
@@ -254,6 +144,148 @@ class Database:
             )
         return cursor.rowcount > 0
 
+    def purge_demo_records(self, demo_addresses: Sequence[str]) -> dict[str, int]:
+        """Remove data created by demo mode.
+
+        Demo mode seeds three wallets, a ``demo`` airdrop and snapshots of the
+        synthetic portfolio.  Those rows used to survive turning ``IDLESCAN_DEMO``
+        off, so the UI kept showing a fake portfolio.  This removes only records
+        that can be attributed to demo mode:
+
+        * the three known demo wallet addresses;
+        * airdrops whose ``source`` is ``demo``;
+        * snapshots triggered by demo mode, or whose wallet set is entirely demo
+          addresses (these are scans of the synthetic wallets).
+
+        A real wallet or a user-added airdrop is never touched.
+        """
+        addresses = {str(address).lower() for address in demo_addresses}
+        counts = {
+            "wallets": 0,
+            "airdrops": 0,
+            "snapshots": 0,
+            "alerts": 0,
+            "notifications": 0,
+            "executions": 0,
+        }
+        with self.connect() as connection:
+            if addresses:
+                placeholders = ",".join("?" for _ in addresses)
+                cursor = connection.execute(
+                    f"DELETE FROM wallets WHERE lower(address) IN ({placeholders})",
+                    tuple(addresses),
+                )
+                counts["wallets"] = max(cursor.rowcount, 0)
+
+            demo_drop_ids = [
+                row[0]
+                for row in connection.execute(
+                    "SELECT id FROM airdrops WHERE source = 'demo'"
+                ).fetchall()
+            ]
+
+            snapshot_ids: list[int] = []
+            for row in connection.execute("SELECT id, wallets, trigger FROM snapshots").fetchall():
+                try:
+                    wallets = json.loads(row["wallets"])
+                except (TypeError, ValueError):
+                    wallets = []
+                wallets = [str(wallet).lower() for wallet in wallets]
+                only_demo = bool(wallets) and all(wallet in addresses for wallet in wallets)
+                if row["trigger"] == "demo" or only_demo:
+                    snapshot_ids.append(int(row["id"]))
+
+            alert_ids: set[int] = set()
+            if snapshot_ids:
+                placeholders = ",".join("?" for _ in snapshot_ids)
+                alert_ids.update(
+                    row[0]
+                    for row in connection.execute(
+                        f"SELECT id FROM alerts WHERE snapshot_id IN ({placeholders})",
+                        tuple(snapshot_ids),
+                    ).fetchall()
+                )
+            if demo_drop_ids:
+                placeholders = ",".join("?" for _ in demo_drop_ids)
+                alert_ids.update(
+                    row[0]
+                    for row in connection.execute(
+                        f"SELECT id FROM alerts WHERE drop_id IN ({placeholders})",
+                        tuple(demo_drop_ids),
+                    ).fetchall()
+                )
+            if alert_ids:
+                placeholders = ",".join("?" for _ in alert_ids)
+                counts["notifications"] = max(
+                    connection.execute(
+                        f"DELETE FROM notifications WHERE alert_id IN ({placeholders})",
+                        tuple(alert_ids),
+                    ).rowcount,
+                    0,
+                )
+                counts["alerts"] = max(
+                    connection.execute(
+                        f"DELETE FROM alerts WHERE id IN ({placeholders})",
+                        tuple(alert_ids),
+                    ).rowcount,
+                    0,
+                )
+
+            if snapshot_ids:
+                placeholders = ",".join("?" for _ in snapshot_ids)
+                connection.execute(
+                    f"DELETE FROM holdings WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM claims WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM alerts WHERE snapshot_id IN ({placeholders})",
+                    tuple(snapshot_ids),
+                )
+                counts["snapshots"] = max(
+                    connection.execute(
+                        f"DELETE FROM snapshots WHERE id IN ({placeholders})",
+                        tuple(snapshot_ids),
+                    ).rowcount,
+                    0,
+                )
+
+            if demo_drop_ids:
+                placeholders = ",".join("?" for _ in demo_drop_ids)
+                connection.execute(
+                    f"DELETE FROM claims WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM dataset_provenance WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+                connection.execute(
+                    f"DELETE FROM executions WHERE drop_id IN ({placeholders})",
+                    tuple(demo_drop_ids),
+                )
+            if addresses:
+                placeholders = ",".join("?" for _ in addresses)
+                counts["executions"] += max(
+                    connection.execute(
+                        f"DELETE FROM executions WHERE lower(wallet) IN ({placeholders})",
+                        tuple(addresses),
+                    ).rowcount,
+                    0,
+                )
+                connection.execute(
+                    f"DELETE FROM alerts WHERE lower(wallet) IN ({placeholders})",
+                    tuple(addresses),
+                )
+            counts["airdrops"] = max(
+                connection.execute("DELETE FROM airdrops WHERE source = 'demo'").rowcount,
+                0,
+            )
+        return counts
+
     def set_airdrop_enabled(self, drop_id: str, enabled: bool) -> bool:
         with self.connect() as connection:
             cursor = connection.execute(
@@ -261,6 +293,68 @@ class Database:
                 (1 if enabled else 0, now(), drop_id),
             )
         return cursor.rowcount > 0
+
+    # ------------------------------------------------------------- custom tokens
+    def add_custom_token(
+        self,
+        chain: str,
+        address: str,
+        symbol: str,
+        decimals: int,
+        *,
+        source: str = "manual",
+    ) -> dict | None:
+        """Add a custom token. Returns None if the (chain, address) already exists."""
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO custom_tokens(chain, address, symbol, decimals, added_at, source) "
+                "VALUES(?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(chain, address) DO NOTHING",
+                (chain.lower(), address, symbol, int(decimals), now(), source),
+            )
+        if cursor.rowcount == 0:
+            return None
+        return self.get_custom_token(chain, address)
+
+    def remove_custom_token(self, chain: str, address: str) -> bool:
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM custom_tokens WHERE chain = ? AND address = ?",
+                (chain.lower(), address),
+            )
+        return cursor.rowcount > 0
+
+    def get_custom_token(self, chain: str, address: str) -> dict | None:
+        from .abi import normalise_address
+
+        address = normalise_address(address)
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM custom_tokens WHERE chain = ? AND address = ?",
+                (chain.lower(), address),
+            ).fetchone()
+        if not row:
+            return None
+        return dict(row)
+
+    def list_custom_tokens(self, chain: str | None = None) -> list[dict]:
+        with self.connect() as connection:
+            if chain:
+                rows = connection.execute(
+                    "SELECT * FROM custom_tokens WHERE chain = ? ORDER BY symbol",
+                    (chain.lower(),),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM custom_tokens ORDER BY chain, symbol"
+                ).fetchall()
+        return [dict(row) for row in rows]
 
     # ------------------------------------------------------------------ jobs
     def create_job(self, job_id: str, kind: str) -> dict:
@@ -303,11 +397,21 @@ class Database:
         return [dict(row) for row in rows]
 
     # ------------------------------------------------------------- snapshots
-    def save_snapshot(self, *, chains: Sequence[str], wallets: Sequence[str], totals: dict, report: dict, trigger: str = "manual") -> int:
+    def save_snapshot(
+        self,
+        *,
+        chains: Sequence[str],
+        wallets: Sequence[str],
+        totals: dict,
+        report: dict,
+        trigger: str = "manual",
+        duration_ms: int | None = None,
+        phases: dict | None = None,
+    ) -> int:
         with self.connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO snapshots(created_at, chains, wallets, trigger, totals, report) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
+                "INSERT INTO snapshots(created_at, chains, wallets, trigger, totals, report, duration_ms, phases) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     now(),
                     json.dumps(list(chains)),
@@ -315,6 +419,8 @@ class Database:
                     trigger,
                     json.dumps(totals),
                     json.dumps(report),
+                    duration_ms,
+                    json.dumps(phases) if phases is not None else None,
                 ),
             )
             snapshot_id = int(cursor.lastrowid)
@@ -338,8 +444,13 @@ class Database:
                 connection.execute(
                     "INSERT INTO claims(snapshot_id, drop_id, name, chain, wallet, distributor, status, "
                     "expired, deadline, amount_raw, decimals, token, usd_price, usd_value, gas_native, gas_usd, "
-                    "net_usd, proof_verified, eligibility_source, note, calldata) "
-                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "net_usd, proof_verified, eligibility_source, note, calldata, "
+                    "gas_units, fee_per_gas, max_fee_per_gas, max_priority_fee_per_gas, l1_fee_wei, gas_cost_native_raw, gas_cost_usd_raw, "
+                    "gas_cost_native_buffered, gas_cost_usd_buffered, "
+                    "gas_estimate_quality, gas_note, gas_limit, fee_source, fee_model, root, "
+                    "price_source, price_asof, price_confidence) "
+                    "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+                    "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         snapshot_id,
                         claim["drop_id"],
@@ -362,6 +473,24 @@ class Database:
                         claim.get("eligibility_source"),
                         claim.get("note"),
                         claim.get("claim_calldata"),
+                        claim.get("gas_units"),
+                        claim.get("fee_per_gas"),
+                        claim.get("max_fee_per_gas"),
+                        claim.get("max_priority_fee_per_gas"),
+                        claim.get("l1_fee_wei"),
+                        claim.get("gas_cost_native_raw", claim.get("gas_native")),
+                        claim.get("gas_cost_usd_raw", claim.get("gas_usd")),
+                        claim.get("gas_cost_native_buffered"),
+                        claim.get("gas_cost_usd_buffered"),
+                        claim.get("gas_estimate_quality"),
+                        claim.get("gas_note"),
+                        claim.get("gas_limit"),
+                        claim.get("fee_source"),
+                        claim.get("fee_model"),
+                        claim.get("root"),
+                        claim.get("price_source"),
+                        claim.get("price_asof"),
+                        claim.get("price_confidence"),
                     ),
                 )
         return snapshot_id
@@ -441,7 +570,12 @@ class Database:
         if min_net is not None:
             query += " AND IFNULL(net_usd, 0) >= ?"
             params.append(min_net)
-        query += " ORDER BY CASE status WHEN 'unclaimed' THEN 0 WHEN 'claimed' THEN 1 ELSE 2 END, IFNULL(net_usd, 0) DESC"
+        # Unknown net value is its own group, after known-value claims, so an
+        # unavailable gas estimate can never masquerade as a profitable one.
+        query += (
+            " ORDER BY CASE status WHEN 'unclaimed' THEN 0 WHEN 'claimed' THEN 1 ELSE 2 END,"
+            " CASE WHEN net_usd IS NULL THEN 1 ELSE 0 END, net_usd DESC"
+        )
         with self.connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [dict(row) for row in rows]
@@ -524,19 +658,68 @@ class Database:
         return {(row["drop_id"], row["wallet"]): row["status"] for row in rows}
 
     # ---------------------------------------------------------------- alerts
-    def add_alert(self, *, kind: str, severity: str, title: str, body: str, wallet: str | None = None, drop_id: str | None = None, snapshot_id: int | None = None) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
-                (now(), kind, severity, title, body, wallet, drop_id, snapshot_id),
-            )
+    @staticmethod
+    def alert_key(
+        kind: str,
+        title: str,
+        *,
+        wallet: str | None = None,
+        drop_id: str | None = None,
+        tier: str | None = None,
+    ) -> str:
+        """Stable identity of an alert condition.
 
-    def list_alerts(self, *, include_ack: bool = False, limit: int = 100) -> list[dict]:
+        ``tier`` lets a condition re-fire when it escalates (for example a
+        deadline moving from 14 days to 3 days) without duplicating on every
+        scan. Callers that do not pass a tier get the v1.1 behaviour.
+        """
+        parts = [kind, wallet or "", drop_id or "", title]
+        if tier:
+            parts.append(tier)
+        return "|".join(parts)
+
+    def add_alert(
+        self,
+        *,
+        kind: str,
+        severity: str,
+        title: str,
+        body: str,
+        wallet: str | None = None,
+        drop_id: str | None = None,
+        snapshot_id: int | None = None,
+        dedupe_key: str | None = None,
+        tier: str | None = None,
+    ) -> int | None:
+        """Insert a new alert, or return ``None`` if the condition is already open."""
+        key = dedupe_key or self.alert_key(kind, title, wallet=wallet, drop_id=drop_id, tier=tier)
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO alerts(created_at, kind, severity, title, body, wallet, drop_id, snapshot_id, dedupe_key, tier) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (now(), kind, severity, redact_text(title), redact_text(body), wallet, drop_id, snapshot_id, key, tier),
+            )
+        return int(cursor.lastrowid) if cursor.rowcount else None
+
+    def list_alerts(
+        self,
+        *,
+        include_ack: bool = False,
+        include_resolved: bool = False,
+        limit: int = 100,
+    ) -> list[dict]:
         query = "SELECT * FROM alerts"
+        clauses: list[str] = []
         if not include_ack:
-            query += " WHERE acknowledged = 0"
-        query += " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END, id DESC LIMIT ?"
+            clauses.append("acknowledged = 0")
+        if not include_resolved:
+            clauses.append("resolved_at IS NULL")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += (
+            " ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END,"
+            " id DESC LIMIT ?"
+        )
         with self.connect() as connection:
             return [dict(row) for row in connection.execute(query, (limit,))]
 
@@ -549,6 +732,102 @@ class Database:
         with self.connect() as connection:
             cursor = connection.execute("UPDATE alerts SET acknowledged = 1 WHERE acknowledged = 0")
         return cursor.rowcount
+
+    def resolve_alert(self, alert_id: int, reason: str = "resolved by operator") -> bool:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE alerts SET resolved_at = ?, resolved_reason = ? "
+                "WHERE id = ? AND resolved_at IS NULL",
+                (now(), redact_text(reason), alert_id),
+            )
+        return cursor.rowcount > 0
+
+    def reopen_alert(self, alert_id: int) -> bool:
+        """Re-open a resolved alert.
+
+        Raises ``sqlite3.IntegrityError`` when another open alert already holds
+        the same dedupe key (the partial unique index protects the user from
+        duplicate signals).
+        """
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "UPDATE alerts SET resolved_at = NULL, resolved_reason = NULL, "
+                "acknowledged = 0 WHERE id = ? AND resolved_at IS NOT NULL",
+                (alert_id,),
+            )
+        return cursor.rowcount > 0
+
+    def resolve_stale_alerts(
+        self,
+        active_keys: set[str],
+        *,
+        kinds: Sequence[str],
+        drop_ids: Sequence[str],
+        reason: str = "condition cleared",
+    ) -> int:
+        """Resolve open condition alerts whose condition no longer holds.
+
+        Event-style alerts are not passed in ``kinds`` and are therefore never
+        swept away by a scan.  Rows are kept for history; only their state
+        changes.
+        """
+        allowed = [kind for kind in kinds if kind]
+        scoped = [drop for drop in drop_ids if drop]
+        if not allowed or not scoped:
+            return 0
+        kind_marks = ",".join("?" for _ in allowed)
+        drop_marks = ",".join("?" for _ in scoped)
+        # Only conditions for drops evaluated by this scan are swept: a scan of
+        # one chain must not silently resolve another chain's deadline alerts.
+        query = (
+            f"UPDATE alerts SET resolved_at = ?, resolved_reason = ? "
+            f"WHERE resolved_at IS NULL AND kind IN ({kind_marks}) "
+            f"AND drop_id IN ({drop_marks})"
+        )
+        parameters: list[Any] = [now(), redact_text(reason), *allowed, *scoped]
+        if active_keys:
+            query += " AND (dedupe_key IS NULL OR dedupe_key NOT IN (" + ",".join("?" for _ in active_keys) + "))"
+            parameters.extend(sorted(active_keys))
+        with self.connect() as connection:
+            cursor = connection.execute(query, parameters)
+        return int(cursor.rowcount)
+
+    # ----------------------------------------------------------- notifications
+    def add_notification(
+        self, *, alert_id: int | None, kind: str, url_redacted: str
+    ) -> int:
+        with self.connect() as connection:
+            cursor = connection.execute(
+                "INSERT INTO notifications(created_at, alert_id, kind, url_redacted, status, attempts) "
+                "VALUES(?, ?, ?, ?, 'pending', 0)",
+                (now(), alert_id, kind, url_redacted),
+            )
+        return int(cursor.lastrowid)
+
+    def update_notification(
+        self,
+        notification_id: int,
+        *,
+        status: str,
+        attempts: int,
+        error: str | None = None,
+        dead_letter: bool = False,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE notifications SET status = ?, attempts = ?, error = ?, dead_letter = ? "
+                "WHERE id = ?",
+                (status, attempts, redact_text(error) if error else None, 1 if dead_letter else 0, notification_id),
+            )
+
+    def list_notifications(self, limit: int = 50) -> list[dict]:
+        with self.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM notifications ORDER BY id DESC LIMIT ?", (limit,)
+                )
+            ]
 
     # ------------------------------------------------------------ executions
     def add_execution(self, *, wallet: str, drop_id: str, chain: str, tx_hash: str | None, status: str, detail: str = "") -> int:
@@ -571,7 +850,7 @@ class Database:
         with self.connect() as connection:
             connection.execute(
                 "INSERT INTO audit(created_at, actor, action, detail) VALUES(?, ?, ?, ?)",
-                (now(), actor, action, detail),
+                (now(), actor, action, redact_text(detail)),
             )
 
     def list_audit(self, limit: int = 100) -> list[dict]:
@@ -604,3 +883,334 @@ class Database:
                 "positions": len(claims),
             }
         return result
+
+
+    # ------------------------------------------------------------- provenance
+    def upsert_dataset_provenance(self, record: dict) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "INSERT INTO dataset_provenance(drop_id, filename, source_url, fetched_at, "
+                "sha256, byte_size, root_verified, root, block_number, entry_count, tool_version) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(drop_id) DO UPDATE SET filename=excluded.filename, "
+                "source_url=excluded.source_url, fetched_at=excluded.fetched_at, "
+                "sha256=excluded.sha256, byte_size=excluded.byte_size, "
+                "root_verified=excluded.root_verified, root=excluded.root, "
+                "block_number=excluded.block_number, entry_count=excluded.entry_count, "
+                "tool_version=excluded.tool_version",
+                (
+                    record["drop_id"],
+                    record["filename"],
+                    record.get("source_url"),
+                    record["fetched_at"],
+                    record["sha256"],
+                    int(record.get("byte_size", 0)),
+                    1 if record.get("root_verified") else 0,
+                    record.get("root"),
+                    record.get("block_number"),
+                    int(record.get("entry_count", 0)),
+                    record.get("tool_version", ""),
+                ),
+            )
+
+    def dataset_provenance(self, drop_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM dataset_provenance WHERE drop_id = ?", (drop_id,)
+            ).fetchone()
+        if not row:
+            return None
+        payload = dict(row)
+        payload["root_verified"] = bool(payload["root_verified"])
+        return payload
+
+    # ------------------------------------------------------------- db admin
+    def table_counts(self) -> dict[str, int]:
+        """Row counts for the tables an operator cares about."""
+        tables = (
+            "wallets",
+            "airdrops",
+            "snapshots",
+            "holdings",
+            "claims",
+            "alerts",
+            "executions",
+            "audit",
+            "jobs",
+            "notifications",
+        )
+        with self.connect() as connection:
+            counts: dict[str, int] = {}
+            for table in tables:
+                try:
+                    counts[table] = int(
+                        connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    )
+                except sqlite3.OperationalError:
+                    counts[table] = 0  # table added by a future/absent migration
+            return counts
+
+    def status(self) -> dict:
+        """Read-only summary for ``idlescan db status``."""
+        exists = self.path.is_file()
+        size = self.path.stat().st_size if exists else 0
+        current = self.schema_version() if exists else 0
+        payload: dict[str, Any] = {
+            "path": str(self.path),
+            "exists": exists,
+            "size_bytes": size,
+            "schema_version": current,
+            "latest_schema_version": LATEST_SCHEMA_VERSION,
+            "pending_migrations": max(0, LATEST_SCHEMA_VERSION - current),
+            "up_to_date": exists and current == LATEST_SCHEMA_VERSION,
+            "counts": {},
+            "latest_snapshot": None,
+        }
+        if exists and current:
+            payload["counts"] = self.table_counts()
+            latest = self.latest_snapshot()
+            if latest:
+                payload["latest_snapshot"] = {
+                    "id": latest["id"],
+                    "created_at": latest["created_at"],
+                    "trigger": latest.get("trigger"),
+                }
+        return payload
+
+    def check(self) -> dict:
+        """Integrity and consistency checks; never modifies the database."""
+        problems: list[str] = []
+        if not self.path.is_file():
+            return {
+                "ok": False,
+                "schema_version": 0,
+                "latest_schema_version": LATEST_SCHEMA_VERSION,
+                "checks": {},
+                "problems": ["database file does not exist"],
+            }
+        with self.connect() as connection:
+            current = schema_version(connection)
+            integrity_rows = [
+                str(row[0])
+                for row in connection.execute("PRAGMA integrity_check").fetchall()
+            ]
+            integrity_ok = integrity_rows == ["ok"]
+            if not integrity_ok:
+                problems.extend(f"integrity: {row}" for row in integrity_rows[:20])
+
+            foreign_rows = connection.execute("PRAGMA foreign_key_check").fetchall()
+            for row in foreign_rows:
+                problems.append(
+                    f"foreign key violation: table={row[0]} rowid={row[1]} parent={row[2]}"
+                )
+
+            def scalar(query: str, parameters: Sequence[Any] = ()) -> int:
+                return int(connection.execute(query, parameters).fetchone()[0])
+
+            orphan_claims = scalar(
+                "SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
+            )
+            orphan_holdings = scalar(
+                "SELECT COUNT(*) FROM holdings WHERE snapshot_id NOT IN (SELECT id FROM snapshots)"
+            )
+            if orphan_claims:
+                problems.append(f"{orphan_claims} claim row(s) reference a missing snapshot")
+            if orphan_holdings:
+                problems.append(f"{orphan_holdings} holding row(s) reference a missing snapshot")
+
+            bad_snapshots = 0
+            for row in connection.execute("SELECT id, totals, report FROM snapshots"):
+                try:
+                    json.loads(row["totals"])
+                    json.loads(row["report"])
+                except (TypeError, ValueError):
+                    bad_snapshots += 1
+            if bad_snapshots:
+                problems.append(f"{bad_snapshots} snapshot(s) contain invalid JSON")
+
+            if current > LATEST_SCHEMA_VERSION:
+                problems.append(
+                    f"schema v{current} is newer than this release (v{LATEST_SCHEMA_VERSION})"
+                )
+            elif current < LATEST_SCHEMA_VERSION:
+                problems.append(
+                    f"schema v{current} is behind v{LATEST_SCHEMA_VERSION}; run "
+                    "`idlescan db migrate`"
+                )
+
+            if "dedupe_key" in {
+                row[1] for row in connection.execute("PRAGMA table_info(alerts)")
+            }:
+                missing_keys = scalar(
+                    "SELECT COUNT(*) FROM alerts WHERE dedupe_key IS NULL AND resolved_at IS NULL"
+                )
+                if missing_keys:
+                    problems.append(f"{missing_keys} open alert(s) have no dedupe key")
+
+            counts = {
+                "snapshots": scalar("SELECT COUNT(*) FROM snapshots"),
+                "claims": scalar("SELECT COUNT(*) FROM claims"),
+                "holdings": scalar("SELECT COUNT(*) FROM holdings"),
+                "alerts": scalar("SELECT COUNT(*) FROM alerts"),
+            }
+        return {
+            "ok": not problems,
+            "schema_version": current,
+            "latest_schema_version": LATEST_SCHEMA_VERSION,
+            "checks": {
+                "integrity": integrity_ok,
+                "foreign_keys": not foreign_rows,
+                "orphans": not (orphan_claims or orphan_holdings),
+                "snapshot_json": not bad_snapshots,
+                "schema": current == LATEST_SCHEMA_VERSION,
+                "counts": counts,
+            },
+            "problems": problems,
+        }
+
+    @staticmethod
+    def _cutoff(days: int) -> str:
+        moment = datetime.now(timezone.utc) - timedelta(days=days)
+        return moment.replace(microsecond=0).isoformat()
+
+    def _prune_plan(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        snapshots: int,
+        alerts_days: int,
+        audit_days: int,
+        executions_days: int,
+        jobs_days: int,
+    ) -> dict[str, int]:
+        plan: dict[str, int] = {}
+
+        if snapshots > 0:
+            plan["snapshots"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM snapshots WHERE id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+            plan["holdings"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM holdings WHERE snapshot_id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+            plan["claims"] = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM claims WHERE snapshot_id NOT IN "
+                    "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                    (snapshots,),
+                ).fetchone()[0]
+            )
+
+        def age_count(table: str, days: int, extra: str = "") -> int:
+            if days <= 0:
+                return 0
+            query = f"SELECT COUNT(*) FROM {table} WHERE created_at < ?"
+            if extra:
+                query += f" AND {extra}"
+            return int(connection.execute(query, (self._cutoff(days),)).fetchone()[0])
+
+        plan["alerts"] = age_count(
+            "alerts", alerts_days, "acknowledged = 1 AND snapshot_id IS NULL"
+        )
+        plan["audit"] = age_count("audit", audit_days)
+        plan["executions"] = age_count("executions", executions_days)
+        plan["jobs"] = age_count("jobs", jobs_days, "finished_at IS NOT NULL")
+        plan["notifications"] = age_count(
+            "notifications", alerts_days, "status != 'pending'"
+        )
+        return {key: value for key, value in plan.items() if value}
+
+    def prune(
+        self,
+        *,
+        snapshots: int = 90,
+        alerts_days: int = 180,
+        audit_days: int = 365,
+        executions_days: int = 365,
+        jobs_days: int = 30,
+        dry_run: bool = True,
+        vacuum: bool = False,
+    ) -> dict:
+        """Delete history outside the retention windows.
+
+        Dry-run by default: callers must opt in to deletion.  The newest
+        ``snapshots`` snapshots and every open alert are always kept.
+        """
+        with self.connect() as connection:
+            plan = self._prune_plan(
+                connection,
+                snapshots=max(0, snapshots),
+                alerts_days=alerts_days,
+                audit_days=audit_days,
+                executions_days=executions_days,
+                jobs_days=jobs_days,
+            )
+            if not dry_run and plan:
+                if snapshots > 0:
+                    keep = int(snapshots)
+                    connection.execute(
+                        "UPDATE alerts SET snapshot_id = NULL WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM holdings WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM claims WHERE snapshot_id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                    connection.execute(
+                        "DELETE FROM snapshots WHERE id NOT IN "
+                        "(SELECT id FROM snapshots ORDER BY id DESC LIMIT ?)",
+                        (keep,),
+                    )
+                if alerts_days > 0:
+                    cutoff = self._cutoff(alerts_days)
+                    connection.execute(
+                        "DELETE FROM alerts WHERE created_at < ? AND acknowledged = 1 "
+                        "AND snapshot_id IS NULL",
+                        (cutoff,),
+                    )
+                    connection.execute(
+                        "DELETE FROM notifications WHERE created_at < ? AND status != 'pending'",
+                        (cutoff,),
+                    )
+                if audit_days > 0:
+                    connection.execute(
+                        "DELETE FROM audit WHERE created_at < ?", (self._cutoff(audit_days),)
+                    )
+                if executions_days > 0:
+                    connection.execute(
+                        "DELETE FROM executions WHERE created_at < ?",
+                        (self._cutoff(executions_days),),
+                    )
+                if jobs_days > 0:
+                    connection.execute(
+                        "DELETE FROM jobs WHERE created_at < ? AND finished_at IS NOT NULL",
+                        (self._cutoff(jobs_days),),
+                    )
+        if vacuum and not dry_run:
+            self.vacuum()
+        return {
+            "dry_run": dry_run,
+            "deleted": plan,
+            "vacuumed": bool(vacuum and not dry_run),
+            "retention": {
+                "snapshots": snapshots,
+                "alerts_days": alerts_days,
+                "audit_days": audit_days,
+                "executions_days": executions_days,
+                "jobs_days": jobs_days,
+            },
+        }

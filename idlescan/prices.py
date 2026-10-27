@@ -11,13 +11,12 @@ no prices still reports raw token amounts.
 
 from __future__ import annotations
 
-import json
 import urllib.error
 import urllib.parse
-import urllib.request
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .cache import Cache
+from .safe_http import FetchError, safe_fetch_json
 
 LLAMA = "https://coins.llama.fi/prices/current"
 COINGECKO = "https://api.coingecko.com/api/v3/simple/price"
@@ -32,20 +31,17 @@ class PriceOracle:
         enabled: bool = True,
         timeout: float = 15.0,
         cache: Cache | None = None,
+        fetcher: Callable[[str], Any] | None = None,
     ):
         self.enabled = enabled
         self.timeout = timeout
         self.cache = cache or Cache(enabled=False)
+        self.fetcher = fetcher or (lambda url: safe_fetch_json(url, timeout=self.timeout))
         self.error: str | None = None
 
     # ------------------------------------------------------------------ http
     def _get(self, url: str) -> Any:
-        request = urllib.request.Request(
-            url,
-            headers={"accept": "application/json", "user-agent": "idlescan/1.0"},
-        )
-        with urllib.request.urlopen(request, timeout=self.timeout) as response:
-            return json.loads(response.read().decode())
+        return self.fetcher(url)
 
     # ------------------------------------------------------------------ core
     def quote(self, assets: Mapping[str, str]) -> dict[str, float]:
@@ -91,7 +87,7 @@ class PriceOracle:
         url = f"{LLAMA}/{urllib.parse.quote(','.join(sorted(ids)), safe=':,')}"
         try:
             payload = self._get(url)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, FetchError) as exc:
             self.error = f"DefiLlama pricing unavailable ({exc})"
             return {}
         coins = payload.get("coins") if isinstance(payload, dict) else None
@@ -109,7 +105,7 @@ class PriceOracle:
         url = f"{COINGECKO}?ids={urllib.parse.quote(','.join(sorted(ids)))}&vs_currencies=usd"
         try:
             payload = self._get(url)
-        except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
+        except (urllib.error.URLError, TimeoutError, OSError, ValueError, FetchError) as exc:
             if self.error is None:
                 self.error = f"CoinGecko pricing unavailable ({exc})"
             return {}

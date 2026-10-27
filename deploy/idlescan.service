@@ -1,0 +1,54 @@
+# Deploy idlescan as a hardened systemd service.
+#
+#   sudo cp deploy/idlescan.service /etc/systemd/system/idlescan.service
+#   sudo mkdir -p /var/lib/idlescan /var/log/idlescan
+#   sudo chown idlescan:idlescan /var/lib/idlescan /var/log/idlescan
+#   sudo systemctl daemon-reload && sudo systemctl enable --now idlescan
+#
+# Put a TLS reverse proxy in front for anything beyond loopback, and set
+# IDLESCAN_AUTH_TOKEN.  Read-only mode is on by default.
+
+[Unit]
+Description=idlescan airdrop research desk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=idlescan
+Group=idlescan
+
+# Hardening
+DynamicUser=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/idlescan /var/log/idlescan
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectClock=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallFilter=@system-service
+
+# Environment
+EnvironmentFile=-/etc/default/idlescan
+Environment=IDLESCAN_HOST=127.0.0.1
+Environment=IDLESCAN_PORT=8787
+Environment=IDLESCAN_DB=/var/lib/idlescan/idlescan.db
+Environment=IDLESCAN_READ_ONLY=true
+
+ExecStart=/usr/local/bin/idlescan serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+WorkingDirectory=/var/lib/idlescan
+
+[Install]
+WantedBy=multi-user.target

@@ -2,27 +2,38 @@
 
 Read-only by construction - the only RPC methods used are ``eth_chainId``,
 ``eth_blockNumber``, ``eth_getCode``, ``eth_getBalance``, ``eth_call``,
-``eth_gasPrice`` and ``eth_estimateGas``.
+``eth_feeHistory``, ``eth_maxPriorityFeePerGas``, ``eth_gasPrice`` and
+``eth_estimateGas``.  Nothing here can sign or broadcast.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import json
+import threading
 import urllib.error
-import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from pathlib import Path
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .abi import AbiError, calldata, decode_one, normalise_address
 from .cache import Cache
 from .chains import Chain, ChainConfig, Token
+from .dataset import (
+    MAX_DATASET_BYTES,
+    DatasetError,
+    dataset_provenance,
+    is_stale,
+    parse_dataset_file,
+)
+from .gas import PARTIAL, UNAVAILABLE, buffered_wei, estimate_claim, gas_cost_native
 from .merkle import Claim, ClaimDataset, parse_dataset, verify_proof
 from .prices import PriceOracle, provider_id_for
+from .redaction import redact_url
 from .registry import Airdrop
 from .rpc import Rpc, RpcError, describe_error
+from .safe_http import FetchError, safe_fetch_json
 
 META_TTL = 30 * 24 * 3600
 
@@ -88,10 +99,26 @@ class ClaimCheck:
     decimals: int = 18
     amount_raw: int = 0
     usd_price: float | None = None
+    # Raw (unbuffered) gas cost.  ``gas_native``/``gas_usd`` keep their v1.1
+    # meaning so old exports and API consumers keep working.
     gas_native: float | None = None
     gas_usd: float | None = None
+    gas_cost_native_buffered: float | None = None
+    gas_cost_usd_buffered: float | None = None
+    gas_units: int | None = None
+    gas_limit: int | None = None
+    fee_per_gas: int | None = None
+    max_fee_per_gas: int | None = None
+    max_priority_fee_per_gas: int | None = None
+    fee_model: str | None = None
+    fee_source: str | None = None
+    l1_fee_wei: int | None = None
+    gas_estimate_quality: str = UNAVAILABLE
+    gas_note: str | None = None
+    gas_buffer_pct: int = 20
     native_symbol: str = "ETH"
     proof_verified: bool | None = None
+    root: str | None = None
     source: str | None = None
     note: str | None = None
     deadline: str | None = None
@@ -111,12 +138,35 @@ class ClaimCheck:
 
     @property
     def net_usd(self) -> float | None:
-        if self.status != UNCLAIMED:
+        """Value after the *buffered* gas cost, or ``None`` when not knowable."""
+        if self.status != UNCLAIMED or self.expired:
             return None
         value = self.usd_value
-        if value is None:
+        if value is None or self.gas_estimate_quality == UNAVAILABLE:
             return None
-        return value - (self.gas_usd or 0.0)
+        if self.gas_cost_usd_buffered is None:
+            return None
+        return value - self.gas_cost_usd_buffered
+
+    @property
+    def net_usd_raw(self) -> float | None:
+        """Value after the unbuffered gas cost (shown alongside the ranking figure)."""
+        if self.status != UNCLAIMED or self.expired:
+            return None
+        value = self.usd_value
+        if value is None or self.gas_estimate_quality == UNAVAILABLE or self.gas_usd is None:
+            return None
+        return value - self.gas_usd
+
+    @property
+    def net_group(self) -> str:
+        """Used by the UI/API to keep unknown-net claims in their own group."""
+        if self.status != UNCLAIMED:
+            return "not_claimable"
+        net = self.net_usd
+        if net is None:
+            return "unknown"
+        return "profitable" if net > 0 else "below_gas"
 
     @property
     def claimable(self) -> bool:
@@ -139,6 +189,8 @@ class ScanReport:
         default_factory=lambda: dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
     )
     price_error: str | None = None
+    datasets: list[dict] = field(default_factory=list)
+    phase_timings: dict[str, float] = field(default_factory=dict)
 
     @property
     def claim_value(self) -> float | None:
@@ -174,6 +226,12 @@ class Scanner:
         estimate_gas: bool = True,
         verbose: Callable[[str], None] | None = None,
         http_fetch: Callable[[str], dict] | None = None,
+        gas_buffer_pct: int = 20,
+        dataset_stale_days: int = 30,
+        max_dataset_bytes: int = MAX_DATASET_BYTES,
+        scan_workers: int = 4,
+        timeout_seconds: int = 300,
+        cancel_event: threading.Event | None = None,
     ):
         self.chains = chains
         self.tokens = tokens
@@ -185,8 +243,15 @@ class Scanner:
         self.estimate_gas = estimate_gas
         self.verbose = verbose or (lambda message: None)
         self.http_fetch = http_fetch or _fetch_json
+        self.gas_buffer_pct = gas_buffer_pct
+        self.dataset_stale_days = dataset_stale_days
+        self.max_dataset_bytes = max_dataset_bytes
+        self.scan_workers = max(1, scan_workers)
+        self.timeout_seconds = timeout_seconds
+        self.cancel_event = cancel_event or threading.Event()
         self._rpcs: dict[str, Rpc] = {}
         self._datasets: dict[str, ClaimDataset | None] = {}
+        self._provenance: dict[str, dict] = {}
         self._leaf_modes: dict[str, tuple[str, bool] | None] = {}
         self._symbols: dict[str, str] = {}
 
@@ -196,7 +261,10 @@ class Scanner:
             return self._rpcs[chain.key]
         rpc = self.rpc_factory(chain)
         try:
-            actual = int(rpc.request("eth_chainId"), 16)
+            if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "request_quorum"):
+                actual = int(rpc.request_quorum("eth_chainId"), 16)
+            else:
+                actual = int(rpc.request("eth_chainId"), 16)
         except (RpcError, TypeError, ValueError) as exc:
             report.warnings.append(f"{chain.name}: unreachable ({describe_error(exc)})")
             raise
@@ -213,27 +281,79 @@ class Scanner:
         normalised = [normalise_address(w) for w in wallets]
         chains = self.chains.resolve(chain_keys)
         report = ScanReport(wallets=normalised, chains=[c.key for c in chains])
+        start_all = dt.datetime.now(dt.timezone.utc)
 
-        for chain in chains:
-            self.verbose(f"scanning {chain.name}...")
+        def scan_chain(chain: Chain) -> None:
+            """Scan a single chain; results are merged into ``report``."""
+            chain_start = dt.datetime.now(dt.timezone.utc)
             try:
                 rpc = self._rpc(chain, report)
             except RpcError:
-                continue
+                self.verbose(f"scanning {chain.name}... unreachable")
+                return
+            self.verbose(f"scanning {chain.name}...")
             try:
                 report.block_numbers[chain.key] = rpc.block_number()
             except RpcError as exc:
-                report.warnings.append(f"{chain.name}: block number unavailable ({describe_error(exc)})")
+                report.warnings.append(
+                    f"{chain.name}: block number unavailable ({describe_error(exc)})"
+                )
+            refresh = getattr(rpc, "refresh_endpoint_health", None)
+            if callable(refresh):
+                try:
+                    for stale in refresh(chain.stale_block_seconds):
+                        report.warnings.append(
+                            f"{chain.name}: RPC {stale['url']} is stale by "
+                            f"{stale['lag_seconds']}s and was deprioritised"
+                        )
+                except RpcError:
+                    pass
 
             self._scan_balances(chain, rpc, normalised, report)
             for drop in self.drops:
+                if self.cancel_event.is_set():
+                    return
                 if drop.chain != chain.key or not drop.enabled:
                     continue
                 self._check_drop(chain, rpc, drop, normalised, report)
 
+            chain_end = dt.datetime.now(dt.timezone.utc)
+            report.phase_timings[f"chain:{chain.key}"] = (
+                chain_end - chain_start
+            ).total_seconds()
+
+        # Scan chains concurrently, bounded by scan_workers.  A failing chain
+        # degrades to a warning and never aborts the scan (WP-13).
+        with ThreadPoolExecutor(max_workers=self.scan_workers) as pool:
+            futures = {pool.submit(scan_chain, chain): chain for chain in chains}
+            deadline = start_all + dt.timedelta(seconds=self.timeout_seconds)
+            for future in as_completed(futures):
+                if self.cancel_event.is_set():
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+                if dt.datetime.now(dt.timezone.utc) > deadline:
+                    report.warnings.append(
+                        f"scan exceeded {self.timeout_seconds}s timeout; "
+                        "partial results returned"
+                    )
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    break
+                try:
+                    future.result()
+                except Exception as exc:  # noqa: BLE001 - chain failure degrades
+                    chain = futures[future]
+                    report.warnings.append(
+                        f"{chain.name}: scan failed ({exc.__class__.__name__})"
+                    )
+
         self._apply_prices(report)
         report.price_error = self.prices.error
+        end_all = dt.datetime.now(dt.timezone.utc)
+        report.phase_timings["total"] = (end_all - start_all).total_seconds()
         self.cache.flush()
+        for dataset in self._datasets.values():
+            if dataset is not None:
+                dataset.close()
         return report
 
     # -------------------------------------------------------------- balances
@@ -437,20 +557,37 @@ class Scanner:
         eligibility = drop.eligibility
         assert eligibility is not None
         if eligibility.type == "merkle_dataset":
-            path = eligibility.dataset or ""
+            path = Path(eligibility.dataset or "")
             try:
-                payload = json.loads(Path(path).read_text())
-                dataset = parse_dataset(payload, source=path)
-                self.verbose(f"  {drop.name}: loaded {len(dataset)} claims from {path}")
+                dataset = parse_dataset_file(
+                    path, drop_id=drop.id, max_bytes=self.max_dataset_bytes
+                )
+                provenance = dataset_provenance(
+                    path,
+                    drop_id=drop.id,
+                    root=dataset.root,
+                    entry_count=len(dataset),
+                )
+                dataset.provenance = provenance.as_dict()
+                self._provenance[drop.id] = dataset.provenance
+                report.datasets.append(dataset.provenance)
+                if is_stale(provenance, self.dataset_stale_days):
+                    age = provenance.fetched_at[:10]
+                    report.warnings.append(
+                        f"{drop.name}: claims dataset is older than "
+                        f"{self.dataset_stale_days} days (file dated {age}); verify it is "
+                        "still the published distribution before trusting the result"
+                    )
+                self.verbose(f"  {drop.name}: loaded {len(dataset)} claims from {path.name}")
             except FileNotFoundError:
                 report.warnings.append(
-                    f"{drop.name}: claims dataset not found ({Path(path).name}) - drop cannot be checked "
+                    f"{drop.name}: claims dataset not found ({path.name}) - drop cannot be checked "
                     f"(add the published distribution file to the dataset directory)"
                 )
-            except (OSError, ValueError) as exc:
+            except (OSError, DatasetError, ValueError) as exc:
                 report.warnings.append(
-                    f"{drop.name}: claims dataset {Path(path).name} could not be read "
-                    f"({exc.__class__.__name__})"
+                    f"{drop.name}: claims dataset {path.name} could not be read "
+                    f"({exc.__class__.__name__}: {str(exc)[:160]})"
                 )
         self._datasets[drop.id] = dataset
         return dataset
@@ -468,7 +605,7 @@ class Scanner:
         root: bytes | None = None
         if drop.root_method:
             try:
-                raw = rpc.eth_call(drop.distributor, calldata(drop.root_method))
+                raw = self._call_critical(rpc, drop.distributor, calldata(drop.root_method))
                 if isinstance(raw, str) and len(raw) >= 66:
                     root = bytes.fromhex(raw[2:66])
             except RpcError as exc:
@@ -492,6 +629,12 @@ class Scanner:
                 )
             return
 
+        if dataset.provenance is not None:
+            dataset.provenance["root_verified"] = bool(root and dataset.root and dataset.root == root)
+            dataset.provenance["block_number"] = report.block_numbers.get(chain.key)
+            if root:
+                dataset.provenance["root"] = "0x" + root.hex()
+
         if root and dataset.root and dataset.root != root:
             for wallet in wallets:
                 report.claims.append(
@@ -511,7 +654,7 @@ class Scanner:
         indexes = [dataset.get(wallet) for wallet in wallets]
         claimed_flags = self._read_claimed(rpc, drop, [c.index if c else None for c in indexes])
 
-        for wallet, claim, claimed in zip(wallets, indexes, claimed_flags):
+        for wallet, claim, claimed in zip(wallets, indexes, claimed_flags, strict=False):
             if claim is None:
                 report.claims.append(
                     self._claim_row(
@@ -559,6 +702,7 @@ class Scanner:
                 source=dataset.source,
                 proof_verified=proof_ok,
                 note=note,
+                root=root.hex() if root else None,
             )
             if status == UNCLAIMED:
                 row.calldata = self._claim_calldata(drop, wallet, claim)
@@ -583,16 +727,16 @@ class Scanner:
             except urllib.error.HTTPError as exc:
                 if exc.code in (404, 400):
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, NO_ALLOCATION, note=f"no claim record (HTTP {exc.code})", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                        self._claim_row(drop, chain, wallet, NO_ALLOCATION, note=f"no claim record (HTTP {exc.code})", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                     )
                 else:
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, ERROR, note=f"claim API HTTP {exc.code}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                        self._claim_row(drop, chain, wallet, ERROR, note=f"claim API HTTP {exc.code}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                     )
                 continue
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"claim API failed: {describe_error(exc)}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, ERROR, note=f"claim API failed: {describe_error(exc)}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -600,7 +744,7 @@ class Scanner:
                 payload.get("claims") or payload.get("proof") or payload.get("amount")
             ):
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API returned no allocation", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API returned no allocation", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -608,16 +752,16 @@ class Scanner:
             if not isinstance(entry, dict) or wallet.lower() not in {k.lower() for k in entry}:
                 entry = {wallet: entry} if "index" in entry or "amount" in entry else entry
             try:
-                dataset = parse_dataset({"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=url)
+                dataset = parse_dataset({"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=redact_url(url))
             except ValueError as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"bad claim payload: {exc}", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, ERROR, note=f"bad claim payload: {exc}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
             claim = dataset.get(wallet)
             if claim is None:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API has no entry for this address", symbol=self._symbols.get(drop.id, drop.name), source=url)
+                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API has no entry for this address", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
                 )
                 continue
 
@@ -641,6 +785,7 @@ class Scanner:
                 drop, chain, wallet, status,
                 amount_raw=claim.amount, symbol=self._symbols.get(drop.id, drop.name), source=url, proof_verified=proof_ok,
                 note=None if claimed is not None else "claim state unavailable from RPC",
+                root=root.hex() if root else None,
             )
             if status == UNCLAIMED:
                 row.calldata = self._claim_calldata(drop, wallet, claim)
@@ -694,6 +839,11 @@ class Scanner:
         self._leaf_modes[drop.id] = chosen
         return chosen
 
+    def _call_critical(self, rpc: Rpc, to: str, data: str) -> Any:
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            return rpc.eth_call_quorum(to, data)
+        return rpc.eth_call(to, data)
+
     def _read_claimed(
         self, rpc: Rpc, drop: Airdrop, indexes: Sequence[int | None]
     ) -> list[bool | None]:
@@ -711,7 +861,11 @@ class Scanner:
         results: list[bool | None] = [None] * len(indexes)
         if not calls:
             return results
-        for position, result in zip(slots, rpc.batch(calls)):
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            values = [self._call_critical(rpc, drop.distributor, call[1][0]["data"]) for call in calls]
+        else:
+            values = rpc.batch(calls)
+        for position, result in zip(slots, values, strict=False):
             if isinstance(result, str) and len(result) >= 66:
                 results[position] = int(result[2:66], 16) != 0
         return results
@@ -754,11 +908,17 @@ class Scanner:
         except (AbiError, ValueError) as exc:
             report.warnings.append(f"{drop.name}: bad eligibility method {eligibility.method!r}: {exc}")
             return
-        allocations = rpc.batch(alloc_calls)
+        if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            allocations = [
+                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
+                for call in alloc_calls
+            ]
+        else:
+            allocations = rpc.batch(alloc_calls)
 
         eligible = [
             (wallet, _decode_uint(result))
-            for wallet, result in zip(wallets, allocations)
+            for wallet, result in zip(wallets, allocations, strict=False)
         ]
         try:
             claimed_calls = [
@@ -769,10 +929,16 @@ class Scanner:
         except (AbiError, ValueError) as exc:
             report.warnings.append(f"{drop.name}: bad claimed method {drop.claimed_method!r}: {exc}")
             return
-        claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
+        if claimed_calls and getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
+            claimed_values = [
+                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
+                for call in claimed_calls
+            ]
+        else:
+            claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
 
         claimed_by_wallet: dict[str, bool | None] = {}
-        for wallet, value in zip([w for w, a in eligible if a], claimed_values):
+        for wallet, value in zip([w for w, a in eligible if a], claimed_values, strict=False):
             claimed_by_wallet[wallet] = _decode_bool(value)
 
         for wallet, amount in eligible:
@@ -797,17 +963,44 @@ class Scanner:
     def _attach_gas(
         self, chain: Chain, rpc: Rpc, row: ClaimCheck, wallet: str, report: ScanReport
     ) -> None:
+        """Attach a labelled gas estimate; failure stays ``unavailable``, never zero."""
         if not self.estimate_gas or not row.calldata:
+            row.gas_note = "gas estimation disabled for this scan"
             return
-        try:
-            estimate = rpc.request(
-                "eth_estimateGas", {"from": wallet, "to": row.distributor, "data": row.calldata}
+        estimate = estimate_claim(
+            rpc,
+            chain,
+            wallet=wallet,
+            distributor=row.distributor,
+            data=row.calldata,
+        )
+        row.gas_units = estimate.gas_units
+        row.gas_limit = estimate.gas_limit
+        row.l1_fee_wei = estimate.l1_fee_wei
+        row.gas_estimate_quality = estimate.quality
+        row.gas_note = estimate.note
+        row.gas_buffer_pct = self.gas_buffer_pct
+        if estimate.fee is not None:
+            row.fee_per_gas = estimate.fee.gas_price
+            row.max_fee_per_gas = estimate.fee.max_fee_per_gas
+            row.max_priority_fee_per_gas = estimate.fee.max_priority_fee_per_gas
+            row.fee_model = estimate.fee.model
+            row.fee_source = estimate.fee.source
+        cost_wei = estimate.cost_wei
+        if cost_wei is None:
+            if estimate.quality == UNAVAILABLE:
+                report.warnings.append(
+                    f"{row.name}: gas estimate unavailable ({estimate.note or 'no fee data'}); "
+                    "net value is unknown"
+                )
+            return
+        row.gas_native = gas_cost_native(cost_wei)
+        buffered = buffered_wei(cost_wei, self.gas_buffer_pct)
+        row.gas_cost_native_buffered = gas_cost_native(buffered)
+        if estimate.quality == PARTIAL:
+            report.warnings.append(
+                f"{row.name}: gas estimate is partial ({estimate.note or 'L1 component missing'})"
             )
-            gas_units = int(estimate, 16) if isinstance(estimate, str) else int(estimate)
-            price = int(rpc.request("eth_gasPrice"), 16)
-        except (RpcError, TypeError, ValueError):
-            return
-        row.gas_native = gas_units * price / 1e18
 
     # ----------------------------------------------------------------- prices
     def _apply_prices(self, report: ScanReport) -> None:
@@ -843,6 +1036,8 @@ class Scanner:
             native_price = quotes.get(f"{row.chain}|native")
             if native_price is not None:
                 row.gas_usd = row.gas_native * native_price
+                if row.gas_cost_native_buffered is not None:
+                    row.gas_cost_usd_buffered = row.gas_cost_native_buffered * native_price
 
 
 def _decode_uint(value: Any) -> int:
@@ -879,8 +1074,8 @@ def _is_expired(deadline: str | None) -> bool:
 
 
 def _fetch_json(url: str) -> dict:
-    request = urllib.request.Request(
-        url, headers={"accept": "application/json", "user-agent": "idlescan/1.0"}
-    )
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.loads(response.read().decode())
+    """Default dataset/claim-API fetch; callers can inject a stricter one."""
+    payload = safe_fetch_json(url)
+    if not isinstance(payload, dict):
+        raise FetchError("expected a JSON object")
+    return payload

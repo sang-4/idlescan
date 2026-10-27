@@ -7,7 +7,16 @@ with SHA3-256 (whose domain byte differs).
 
 import unittest
 
-from idlescan.abi import AbiError, calldata, checksum, decode, encode, encode_packed, normalise_address, selector
+from idlescan.abi import (
+    AbiError,
+    calldata,
+    checksum,
+    decode,
+    encode,
+    encode_packed,
+    normalise_address,
+    selector,
+)
 from idlescan.keccak import keccak256
 
 

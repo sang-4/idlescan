@@ -13,8 +13,10 @@ import re
 import sqlite3
 import threading
 import uuid
+from concurrent.futures import CancelledError
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -23,13 +25,27 @@ from .cache import Cache
 from .chains import ChainConfig, Token, load_chains, load_tokens
 from .config import PROJECT_ROOT, Settings
 from .db import Database
+from .notifications import Notifier
+from .preflight import PreflightError, run_preflight
 from .prices import PriceOracle
+from .redaction import redact_text
 from .registry import Airdrop, ConfigError, load_registry, parse_registry
 from .report import render_markdown, to_dict
-from .rpc import Rpc
+from .rpc import EndpointHealth, Rpc
+from .safe_http import safe_fetch_json
 from .scanner import CLAIMED, ERROR, NO_ALLOCATION, UNCLAIMED, Scanner, ScanReport
 
 TX_HASH = re.compile(r"^0x[0-9a-fA-F]{64}$")
+# Alerts that describe a condition that can become false again.  Event alerts
+# (new allocation, claim confirmed) are deliberately excluded from the sweep.
+CONDITION_ALERT_KINDS = (
+    "below_gas",
+    "deadline",
+    "invalid_proof",
+    "claim_error",
+    "missing_dataset",
+    "missing_eligibility",
+)
 # Absolute filesystem paths (POSIX or Windows) in text that is shown in the UI.
 _ABS_PATH = re.compile(r"(?<![:/\w])(?:[A-Za-z]:\\|/)(?:[^\s/\\'\"]+[\\/])+([^\s/\\'\"]+)")
 
@@ -41,7 +57,8 @@ def public_text(value: str) -> str:
     paths were sanitised at generation time. Scrubbing on read keeps every
     user-facing surface free of host-specific locations.
     """
-    return _ABS_PATH.sub(lambda match: match.group(1), str(value))
+    scrubbed = _ABS_PATH.sub(lambda match: match.group(1), str(value))
+    return redact_text(scrubbed)
 
 
 class ServiceError(RuntimeError):
@@ -60,11 +77,18 @@ class Conflict(ServiceError):
     status = 409
 
 
+class Lockdown(ServiceError):
+    """Local mutations are disabled by IDLESCAN_LOCKDOWN."""
+
+    status = 403
+
+
 @dataclass
 class ScanRequest:
     wallets: list[str]
     chains: list[str]
     trigger: str = "manual"
+    cancel_event: threading.Event | None = None
 
 
 class PlatformService:
@@ -81,15 +105,39 @@ class PlatformService:
         self.scanner_factory = scanner_factory
         self.registry_path = registry_path
         self.db = Database(settings.db_path).init()
+        self.endpoint_health = EndpointHealth()
+        self.notifier = Notifier.from_settings(settings, db=self.db)
         self._jobs: dict[str, threading.Thread] = {}
         self._job_lock = threading.RLock()
         self._check_lock = threading.Lock()
         self._active_scan: str | None = None
+        self._cancel_events: dict[str, threading.Event] = {}
         self.chains: ChainConfig = load_chains()
         self.tokens: dict[str, list[Token]] = load_tokens(self.chains)
         self.seed_registry()
+        self._recover_stale_jobs()
 
     # ------------------------------------------------------------------ setup
+    def _recover_stale_jobs(self) -> None:
+        """Mark jobs left ``running`` after a restart as interrupted."""
+        with self.db.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT id FROM jobs WHERE status = 'running'"
+                ).fetchall()
+            ]
+        for row in rows:
+            self.db.update_job(
+                row["id"],
+                status="failed",
+                message="scan interrupted by restart",
+                error="interrupted",
+                finished_at=_now(),
+            )
+            self.db.log("scanner", "scan.recovered", f"job={row['id']}")
+
+    # ------------------------------------------------------------------ scans
     def seed_registry(self) -> None:
         """Copy bundled registry entries into the DB without clobbering local edits."""
         try:
@@ -114,12 +162,23 @@ class PlatformService:
         rows = self.db.list_airdrops(enabled_only=True)
         payload = {"airdrops": [row["payload"] for row in rows]}
         try:
-            return parse_registry(payload, self.chains)
+            # Claim preparation works from a snapshot; the dataset file is only
+            # needed to *discover* positions, not to hand off one that exists.
+            return parse_registry(payload, self.chains, require_dataset=False)
         except ConfigError:
             return []
 
+    # --------------------------------------------------------------- gating
+    def _require_local_edits(self, action: str) -> None:
+        if self.settings.lockdown:
+            raise Lockdown(
+                f"local edits are locked (IDLESCAN_LOCKDOWN=true); cannot {action}. "
+                "Reads, exports and POST /api/check are still available."
+            )
+
     # ---------------------------------------------------------------- wallets
     def add_wallet(self, address: str, label: str = "", tags: str = "") -> dict:
+        self._require_local_edits("add a wallet")
         try:
             normalised = normalise_address(address)
         except ValueError as exc:
@@ -156,6 +215,7 @@ class PlatformService:
         return wallets
 
     def delete_wallet(self, address: str) -> bool:
+        self._require_local_edits("delete a wallet")
         removed = self.db.remove_wallet(address)
         if removed:
             self.db.log("api", "wallet.remove", address.lower())
@@ -163,18 +223,21 @@ class PlatformService:
 
     # ------------------------------------------------------------------ scans
     def start_scan(self, chain_keys: Sequence[str] | None = None, trigger: str = "manual") -> dict:
+        self._require_local_edits("start a scan")
         wallets = [w["address"] for w in self.db.list_wallets()]
         if not wallets:
             raise ServiceError("add at least one wallet before scanning")
         chains = [c for c in (chain_keys or self.settings.chains or ["all"]) if c]
+        cancel_event = threading.Event()
         with self._job_lock:
             if self._active_scan:
                 raise Conflict("a scan is already running")
             job_id = uuid.uuid4().hex[:12]
             self.db.create_job(job_id, "scan")
+            self._cancel_events[job_id] = cancel_event
             thread = threading.Thread(
                 target=self._run_scan,
-                args=(job_id, ScanRequest(wallets=wallets, chains=chains, trigger=trigger)),
+                args=(job_id, ScanRequest(wallets=wallets, chains=chains, trigger=trigger, cancel_event=cancel_event)),
                 name=f"scan-{job_id}",
                 daemon=True,
             )
@@ -183,7 +246,22 @@ class PlatformService:
             thread.start()
         return self.db.get_job(job_id)
 
+    def cancel_scan(self, job_id: str) -> bool:
+        """Request cancellation of a running scan.
+
+        Returns ``True`` if the scan was found and cancellation requested,
+        ``False`` if the job does not exist or is not running.
+        """
+        with self._job_lock:
+            if job_id not in self._cancel_events:
+                return False
+            event = self._cancel_events[job_id]
+        event.set()
+        self.db.log("scanner", "scan.cancel", f"job={job_id}")
+        return True
+
     def _run_scan(self, job_id: str, request: ScanRequest) -> None:
+        cancel_event = request.cancel_event or threading.Event()
         messages: list[str] = []
 
         def progress(message: str) -> None:
@@ -197,6 +275,8 @@ class PlatformService:
                 report = self._demo_report()
             else:
                 report = self.build_scanner(progress).scan(request.chains, request.wallets)
+            if cancel_event.is_set():
+                raise CancelledError("scan cancelled")
             _apply_min_usd(report, self.settings.min_usd)
             payload = to_dict(report)
             snapshot_id = self.db.save_snapshot(
@@ -207,21 +287,34 @@ class PlatformService:
                 trigger=request.trigger,
             )
             alerts = self._generate_alerts(snapshot_id, payload)
+            self._persist_datasets(payload)
+            result = {
+                "snapshot_id": snapshot_id,
+                "totals": payload["totals"],
+                "holdings": len(payload["holdings"]),
+                "claims": len(payload["claims"]),
+                "alerts": alerts,
+            }
+            if report.phase_timings:
+                result["phase_timings"] = report.phase_timings
             self.db.update_job(
                 job_id,
                 status="done",
                 progress=1.0,
                 message=f"snapshot #{snapshot_id} saved",
                 finished_at=_now(),
-                result={
-                    "snapshot_id": snapshot_id,
-                    "totals": payload["totals"],
-                    "holdings": len(payload["holdings"]),
-                    "claims": len(payload["claims"]),
-                    "alerts": alerts,
-                },
+                result=result,
             )
             self.db.log("scanner", "scan.complete", f"snapshot={snapshot_id} alerts={alerts}")
+        except CancelledError:
+            self.db.update_job(
+                job_id,
+                status="failed",
+                message="scan cancelled",
+                error="cancelled",
+                finished_at=_now(),
+            )
+            self.db.log("scanner", "scan.cancelled", f"job={job_id}")
         except Exception as exc:  # noqa: BLE001 - surfaced to the UI
             self.db.update_job(
                 job_id,
@@ -234,6 +327,7 @@ class PlatformService:
         finally:
             with self._job_lock:
                 self._active_scan = None
+                self._cancel_events.pop(job_id, None)
 
     def build_scanner(self, progress: Callable[[str], None] | None = None) -> Scanner:
         if self.scanner_factory:
@@ -244,8 +338,19 @@ class PlatformService:
             self.registry_drops(),
             cache=Cache(),
             prices=PriceOracle(),
-            rpc_factory=self.rpc_factory or (lambda chain: Rpc(list(chain.rpcs))),
+            rpc_factory=self.rpc_factory or (lambda chain: self._new_rpc(chain)),
             verbose=progress,
+            gas_buffer_pct=self.settings.gas_buffer_pct,
+            dataset_stale_days=self.settings.dataset_stale_days,
+            scan_workers=self.settings.scan_workers,
+            timeout_seconds=self.settings.scan_timeout_seconds,
+            http_fetch=lambda url: safe_fetch_json(
+                url,
+                allow_http=self.settings.allow_http_fetch,
+                max_bytes=self.settings.max_fetch_bytes,
+                allowed_hosts=self.settings.fetch_allowed_hosts,
+                timeout=self.settings.fetch_timeout_seconds,
+            ),
         )
 
     def run_scan_sync(
@@ -271,6 +376,7 @@ class PlatformService:
             trigger=trigger,
         )
         self._generate_alerts(snapshot_id, payload)
+        self._persist_datasets(payload)
         return snapshot_id, payload
 
     def job(self, job_id: str) -> dict:
@@ -282,8 +388,49 @@ class PlatformService:
     # --------------------------------------------------------------- alerts
     def _generate_alerts(self, snapshot_id: int, payload: dict) -> int:
         previous = self.db.previous_claims(snapshot_id)
-        created = 0
-        before = len(self.db.list_alerts(include_ack=True))
+        new_alerts: list[dict] = []
+        active_keys: set[str] = set()
+
+        def emit(
+            *,
+            kind: str,
+            severity: str,
+            title: str,
+            body: str,
+            wallet: str | None = None,
+            drop_id: str | None = None,
+            tier: str | None = None,
+            persistent: bool = True,
+        ) -> None:
+            key = self.db.alert_key(
+                kind, title, wallet=wallet, drop_id=drop_id, tier=tier
+            )
+            if persistent:
+                active_keys.add(key)
+            alert_id = self.db.add_alert(
+                kind=kind,
+                severity=severity,
+                title=title,
+                body=body,
+                wallet=wallet,
+                drop_id=drop_id,
+                snapshot_id=snapshot_id,
+                dedupe_key=key,
+                tier=tier,
+            )
+            if alert_id is not None:
+                new_alerts.append(
+                    {
+                        "id": alert_id,
+                        "kind": kind,
+                        "severity": severity,
+                        "title": public_text(title),
+                        "body": public_text(body),
+                        "wallet": wallet,
+                        "drop_id": drop_id,
+                        "created_at": _now(),
+                    }
+                )
 
         for claim in payload["claims"]:
             wallet = claim["wallet"]
@@ -295,7 +442,7 @@ class PlatformService:
             if status == UNCLAIMED and not claim.get("expired"):
                 net = claim.get("net_usd")
                 if net is not None and net <= 0:
-                    self.db.add_alert(
+                    emit(
                         kind="below_gas",
                         severity="warning",
                         title=f"{drop} costs more gas than it is worth",
@@ -305,21 +452,21 @@ class PlatformService:
                         ),
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
                     )
                 deadline = _parse_deadline(claim.get("deadline"))
                 if deadline and deadline - datetime.now(timezone.utc) < timedelta(days=14):
-                    # No day count in the title: it is part of the dedupe key, so a
-                    # rescan tomorrow would otherwise duplicate the alert. The title
-                    # changes once, when the window enters its final three days, so an
-                    # acknowledged reminder still escalates before tokens are lost.
+                    # The tier is part of the dedupe key, so the same condition
+                    # can escalate from the 14-day reminder to the final-three-day
+                    # warning without duplicating on every scan.  The older tier
+                    # is resolved by the sweep below.
                     final_stretch = deadline - datetime.now(timezone.utc) <= timedelta(days=3)
+                    tier = "3d" if final_stretch else "14d"
                     title = (
                         f"{drop} claim window closes in 3 days or less"
                         if final_stretch
                         else f"{drop} claim window closing"
                     )
-                    self.db.add_alert(
+                    emit(
                         kind="deadline",
                         severity="critical",
                         title=title,
@@ -329,50 +476,48 @@ class PlatformService:
                         ),
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
+                        tier=tier,
                     )
                 newly_allocated = was == NO_ALLOCATION or (previous and was is None)
                 if newly_allocated:
-                    self.db.add_alert(
+                    emit(
                         kind="new_allocation",
                         severity="info",
                         title=f"New allocation detected: {drop}",
                         body=f"{wallet} now has an unclaimed allocation.",
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
+                        persistent=False,
                     )
                 if claim.get("proof_verified") is False:
-                    self.db.add_alert(
+                    emit(
                         kind="invalid_proof",
                         severity="critical",
                         title=f"Invalid proof for {drop}",
                         body=f"{wallet}: dataset proof does not match the on-chain root. Do not trust it.",
                         wallet=wallet,
                         drop_id=claim["drop_id"],
-                        snapshot_id=snapshot_id,
                     )
 
             if status == CLAIMED and was == UNCLAIMED:
-                self.db.add_alert(
+                emit(
                     kind="claimed",
                     severity="info",
                     title=f"Claim confirmed: {drop}",
                     body=f"{wallet} was unclaimed in the previous snapshot and is now claimed.",
                     wallet=wallet,
                     drop_id=claim["drop_id"],
-                    snapshot_id=snapshot_id,
+                    persistent=False,
                 )
 
             if status == ERROR:
-                self.db.add_alert(
+                emit(
                     kind="claim_error",
                     severity="critical",
                     title=f"Claim check failed: {drop}",
                     body=claim.get("note") or "unknown error",
                     wallet=wallet,
                     drop_id=claim["drop_id"],
-                    snapshot_id=snapshot_id,
                 )
 
         for row in self.db.list_airdrops(enabled_only=True):
@@ -380,7 +525,7 @@ class PlatformService:
             eligibility = payload_drop.get("eligibility") or {}
             dataset = eligibility.get("dataset")
             if dataset and not _dataset_exists(str(dataset)):
-                self.db.add_alert(
+                emit(
                     kind="missing_dataset",
                     severity="warning",
                     title=f"{payload_drop.get('name', row['id'])}: claims dataset missing",
@@ -389,36 +534,75 @@ class PlatformService:
                         "The drop cannot be checked until the file is available."
                     ),
                     drop_id=row["id"],
-                    snapshot_id=snapshot_id,
                 )
             if not payload_drop.get("eligibility"):
-                self.db.add_alert(
+                emit(
                     kind="missing_eligibility",
                     severity="warning",
                     title=f"{payload_drop.get('name', row['id'])} has no eligibility source",
                     body="Add a dataset, claim API or allocation view to make this drop checkable.",
                     drop_id=row["id"],
-                    snapshot_id=snapshot_id,
                 )
 
-        created = len(self.db.list_alerts(include_ack=True)) - before
-        return max(created, 0)
+        scanned_drops = sorted({str(claim["drop_id"]) for claim in payload["claims"]})
+        self.db.resolve_stale_alerts(
+            active_keys,
+            kinds=CONDITION_ALERT_KINDS,
+            drop_ids=scanned_drops,
+        )
+        if new_alerts:
+            self.notifier.dispatch(new_alerts)
+        return len(new_alerts)
 
-    def alerts(self, *, include_ack: bool = False) -> list[dict]:
-        rows = self.db.list_alerts(include_ack=include_ack)
+    def alerts(self, *, include_ack: bool = False, include_resolved: bool = False) -> list[dict]:
+        rows = self.db.list_alerts(
+            include_ack=include_ack,
+            include_resolved=include_resolved or include_ack,
+        )
         for row in rows:
             row["title"] = public_text(row["title"])
             row["body"] = public_text(row["body"])
+            if row.get("resolved_reason"):
+                row["resolved_reason"] = public_text(row["resolved_reason"])
         return rows
 
     def ack_alert(self, alert_id: int) -> bool:
+        self._require_local_edits("acknowledge an alert")
         return self.db.ack_alert(alert_id)
 
     def ack_all_alerts(self) -> int:
+        self._require_local_edits("acknowledge alerts")
         return self.db.ack_all_alerts()
+
+    def resolve_alert(self, alert_id: int, reason: str = "resolved by operator") -> bool:
+        self._require_local_edits("resolve an alert")
+        return self.db.resolve_alert(alert_id, reason)
+
+    def reopen_alert(self, alert_id: int) -> bool:
+        self._require_local_edits("reopen an alert")
+        try:
+            return self.db.reopen_alert(alert_id)
+        except sqlite3.IntegrityError:
+            raise Conflict(
+                "another open alert already covers this condition; acknowledge or resolve it first"
+            ) from None
+
+    def notifications(self, limit: int = 50) -> list[dict]:
+        rows = self.db.list_notifications(limit)
+        for row in rows:
+            if row.get("error"):
+                row["error"] = public_text(row["error"])
+        return rows
 
     # ------------------------------------------------------- claim execution
     def prepare_claim(self, drop_id: str, wallet: str) -> dict:
+        """Prepare an unsigned claim only after a fresh, fail-closed preflight.
+
+        Every check below runs against the chain now, not against the snapshot.
+        A failure is recorded in executions/audit and returned as an error; no
+        partial transaction is ever handed out.
+        """
+        self._require_local_edits("prepare a claim")
         self._require_write_mode("prepare claim transaction")
         snapshot = self.db.latest_snapshot()
         if not snapshot:
@@ -428,32 +612,73 @@ class PlatformService:
             raise NotFound("no claim position for that wallet/drop in the latest snapshot")
         if row["status"] != UNCLAIMED:
             raise Conflict(f"position is {row['status']}, not claimable")
-        if row["expired"]:
-            raise Conflict("claim window has expired")
+
+        drop = next((item for item in self.registry_drops() if item.id == drop_id), None)
+        if drop is None:
+            raise NotFound(f"airdrop {drop_id} is not in the registry")
+        chain = self.chains.get(row["chain"])
+
+        deadline = _parse_deadline(drop.claim_deadline)
+        if deadline is not None and deadline <= datetime.now(timezone.utc):
+            self._record_preflight_failure(row, "claim window expired before preparation")
+            raise Conflict("claim window has expired (checked again at preparation time)")
         if not row["calldata"]:
+            self._record_preflight_failure(row, "no calldata in the snapshot")
             raise Conflict("no calldata available for this position")
 
-        chain_id = None
-        for chain in self.chains.chains.values():
-            if chain.key == row["chain"]:
-                chain_id = chain.chain_id
-                break
+        rpc = self._chain_rpc(chain)
+        try:
+            evidence = run_preflight(rpc, drop, row)
+        except PreflightError as exc:
+            self._record_preflight_failure(row, str(exc))
+            error_class = Conflict if exc.status == 409 else ServiceError
+            if exc.status == 503:
+                error_class = ServiceError
+            raise error_class(str(exc)) from None
+
+        gas_limit = row.get("gas_limit")
         tx = {
-            "chainId": hex(chain_id) if chain_id else None,
+            "chainId": hex(chain.chain_id),
             "from": row["wallet"],
             "to": row["distributor"],
             "value": "0x0",
             "data": row["calldata"],
         }
+        if gas_limit:
+            tx["gasLimit"] = hex(int(gas_limit))
+        if row.get("fee_model") == "eip1559" and row.get("max_fee_per_gas"):
+            tx["maxFeePerGas"] = hex(int(row["max_fee_per_gas"]))
+            tx["maxPriorityFeePerGas"] = hex(int(row["max_priority_fee_per_gas"] or 0))
+        elif row.get("fee_per_gas"):
+            tx["gasPrice"] = hex(int(row["fee_per_gas"]))
+        assert tx["value"] == "0x0", "claim value must always be zero"
+
+        call = evidence["call"]
+        amount_display = Decimal(int(row["amount_raw"])) / (Decimal(10) ** int(row["decimals"]))
+        prepared_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        summary = [
+            f"Network: {chain.name} (chain id {chain.chain_id}).",
+            f"Contract: {drop.name} distributor {drop.distributor}.",
+            f"Function: {call['function']}.",
+            f"Index: {call['index']}; account: {call['account']}; amount: {amount_display} "
+            f"({row['amount_raw']} base units).",
+            f"Proof: {len(call['proof'])} sibling hashes, re-verified against the on-chain root.",
+            "Value: 0 - this claim never asks you to send ETH or a token.",
+            "The server does not sign or broadcast; your wallet will.",
+        ]
         self.db.add_execution(
             wallet=row["wallet"],
             drop_id=drop_id,
             chain=row["chain"],
             tx_hash=None,
             status="prepared",
-            detail="unsigned transaction returned to wallet",
+            detail=f"preflight ok at block {evidence.get('block_number')}",
         )
-        self.db.log("api", "claim.prepare", f"{drop_id}/{row['wallet']}")
+        self.db.log(
+            "api",
+            "claim.prepare",
+            f"{drop_id}/{row['wallet']} preflight ok at block {evidence.get('block_number')}",
+        )
         return {
             "transaction": tx,
             "claim": {
@@ -464,9 +689,25 @@ class PlatformService:
                 "decimals": row["decimals"],
                 "usd_value": row["usd_value"],
                 "gas_usd": row["gas_usd"],
+                "gas_usd_buffered": row.get("gas_cost_usd_buffered"),
+                "gas_estimate_quality": row.get("gas_estimate_quality"),
+                "gas_note": row.get("gas_note"),
                 "net_usd": row["net_usd"],
                 "distributor": row["distributor"],
             },
+            "preflight": {
+                "checked_at": prepared_at,
+                "block_number": evidence.get("block_number"),
+                "call": call,
+                "root": evidence.get("root"),
+                "distributor": row["distributor"],
+                "explorer_url": (
+                    f"{chain.explorer}/address/{row['distributor']}" if chain.explorer else None
+                ),
+                "payable": evidence.get("payable"),
+                "provenance": evidence.get("provenance"),
+            },
+            "what_you_are_about_to_sign": summary,
             "warnings": [
                 "Check the destination address against the project's official docs before signing.",
                 "A legitimate claim never needs a token approval or an off-chain signature.",
@@ -474,7 +715,48 @@ class PlatformService:
             ],
         }
 
+    def _new_rpc(self, chain, *, quorum: int | None = None) -> Rpc:
+        return Rpc(
+            self.settings.rpc_endpoints(chain),
+            quorum=quorum if quorum is not None else self.settings.rpc_quorum,
+            health=self.endpoint_health,
+            label=chain.key,
+        )
+
+    def _chain_rpc(self, chain) -> Rpc:
+        if self.rpc_factory:
+            return self.rpc_factory(chain)
+        # The highest-risk action always uses two endpoints when they exist.
+        quorum = max(2, self.settings.rpc_quorum) if len(self.settings.rpc_endpoints(chain)) >= 2 else 1
+        return self._new_rpc(chain, quorum=quorum)
+
+    def rpc_health(self) -> list[dict]:
+        return self.endpoint_health.snapshot()
+
+    def _persist_datasets(self, payload: dict) -> None:
+        for record in payload.get("datasets", []) or []:
+            try:
+                self.db.upsert_dataset_provenance(record)
+            except (KeyError, sqlite3.Error):
+                continue
+
+    def _record_preflight_failure(self, row: dict, detail: str) -> None:
+        self.db.add_execution(
+            wallet=row["wallet"],
+            drop_id=row["drop_id"],
+            chain=row["chain"],
+            tx_hash=None,
+            status="preflight_failed",
+            detail=detail[:500],
+        )
+        self.db.log(
+            "api",
+            "claim.preflight_failed",
+            f"{row['drop_id']}/{row['wallet']}: {detail[:300]}",
+        )
+
     def confirm_claim(self, *, drop_id: str, wallet: str, tx_hash: str) -> dict:
+        self._require_local_edits("record a claim")
         self._require_write_mode("record a claim transaction")
         if not TX_HASH.match(tx_hash or ""):
             raise ServiceError("tx_hash must be a 32-byte hex transaction hash")
@@ -505,7 +787,10 @@ class PlatformService:
         if not chain:
             return None
         try:
-            rpc = (self.rpc_factory or (lambda c: Rpc(list(c.rpcs), timeout=8, retries=1)))(chain)
+            rpc = (
+                self.rpc_factory
+                or (lambda c: Rpc(self.settings.rpc_endpoints(c), timeout=8, retries=1, label=c.key))
+            )(chain)
             return rpc.request("eth_getTransactionReceipt", tx_hash)
         except Exception:  # noqa: BLE001 - receipt is best-effort
             return None
@@ -627,6 +912,7 @@ class PlatformService:
         return out
 
     def add_airdrop(self, payload: dict) -> dict:
+        self._require_local_edits("add an airdrop")
         candidate = dict(payload)
         candidate.setdefault("token_decimals", 18)
         try:
@@ -644,10 +930,12 @@ class PlatformService:
         return next(a for a in self.airdrops() if a["id"] == drop.id)
 
     def set_airdrop_enabled(self, drop_id: str, enabled: bool) -> None:
+        self._require_local_edits("change an airdrop")
         if not self.db.set_airdrop_enabled(drop_id, enabled):
             raise NotFound(f"airdrop {drop_id} not found")
 
     def delete_airdrop(self, drop_id: str) -> None:
+        self._require_local_edits("delete an airdrop")
         if not self.db.delete_airdrop(drop_id):
             raise Conflict("bundled registry entries cannot be deleted; disable them instead")
         self.db.log("api", "airdrop.delete", drop_id)
@@ -711,6 +999,7 @@ class PlatformService:
             **summary,
             "contract": contract,
             "eligibility": eligibility,
+            "dataset_provenance": self.db.dataset_provenance(drop_id),
             "verified_on": payload.get("verified_on"),
             "notes": payload.get("notes"),
             "positions": positions,
@@ -727,6 +1016,39 @@ class PlatformService:
             },
         }
 
+    # ------------------------------------------------------------ custom tokens
+    def custom_tokens(self, chain: str | None = None) -> list[dict]:
+        return self.db.list_custom_tokens(chain)
+
+    def add_custom_token(
+        self,
+        chain: str,
+        address: str,
+        symbol: str,
+        decimals: int,
+        *,
+        source: str = "manual",
+    ) -> dict:
+        self._require_local_edits("add a custom token")
+        self._require_write_mode("add custom token")
+        self.chains.get(chain)  # raises ConfigError for unknown chain
+        result = self.db.add_custom_token(chain, address, symbol, decimals, source=source)
+        if result is None:
+            raise Conflict(
+                f"custom token {address} already tracked on {chain}"
+            )
+        self.db.log("api", "custom_token.add", f"{chain}:{address}")
+        return result
+
+    def remove_custom_token(self, chain: str, address: str) -> bool:
+        self._require_local_edits("remove a custom token")
+        self._require_write_mode("remove custom token")
+        removed = self.db.remove_custom_token(chain, address)
+        if removed:
+            self.db.log("api", "custom_token.remove", f"{chain}:{address}")
+        return removed
+
+    # ------------------------------------------------------------ wallets
     def wallet_detail(self, address: str) -> dict:
         try:
             normalised = normalise_address(address)
@@ -834,6 +1156,7 @@ class PlatformService:
         }
 
     def add_wallets(self, entries: Sequence[dict | str]) -> dict:
+        self._require_local_edits("import wallets")
         """Bulk watchlist import. Invalid rows are reported, valid rows still land."""
         if not isinstance(entries, (list, tuple)):
             raise ServiceError("'wallets' must be a list")
@@ -1200,6 +1523,7 @@ class PlatformService:
         raise ServiceError(f"unknown export format {fmt!r} (json, csv, md)")
 
     def backup(self, target: Path | str | None = None) -> Path:
+        self._require_local_edits("create a backup")
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         if target:
             path = Path(target).expanduser()
@@ -1215,10 +1539,48 @@ class PlatformService:
         finally:
             destination.close()
             source.close()
+        if not target or Path(target).expanduser().is_dir():
+            self._rotate_backups(path.parent)
         self.db.log("system", "db.backup", path.name)
         return path
 
+    def prune_database(self, **kwargs) -> dict:
+        self._require_local_edits("prune the database")
+        return self.db.prune(**kwargs)
+
+    def _rotate_backups(self, directory: Path) -> list[Path]:
+        """Keep only the newest ``IDLESCAN_BACKUP_KEEP`` backups in a directory."""
+        keep = max(1, self.settings.backup_keep)
+        candidates = sorted(
+            (item for item in directory.glob("idlescan-*.db") if item.is_file()),
+            key=lambda item: (item.stat().st_mtime, item.name),
+            reverse=True,
+        )
+        removed: list[Path] = []
+        for stale in candidates[keep:]:
+            try:
+                stale.unlink()
+                removed.append(stale)
+            except OSError:
+                continue
+        return removed
+
     # ------------------------------------------------------------------ demo
+    def purge_demo_data(self) -> dict[str, int]:
+        """Remove leftover demo rows when demo mode is off.
+
+        Returns per-table counts.  Safe to call on every normal start: if there
+        is nothing demo-related, every count is zero.
+        """
+        from .selftest import WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED
+
+        counts = self.db.purge_demo_records(
+            [WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED]
+        )
+        if any(counts.values()):
+            self.db.log("system", "demo.purge", json.dumps(counts, sort_keys=True))
+        return counts
+
     def seed_demo(self) -> None:
         if self.db.latest_snapshot() or self.db.list_wallets():
             return
@@ -1261,6 +1623,8 @@ class PlatformService:
             claim.usd_price = demo_usd
             if claim.gas_native is not None:
                 claim.gas_usd = claim.gas_native * eth_usd
+            if claim.gas_cost_native_buffered is not None:
+                claim.gas_cost_usd_buffered = claim.gas_cost_native_buffered * eth_usd
         return report
 
 

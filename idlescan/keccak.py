@@ -4,7 +4,7 @@ Python's hashlib only ships SHA3-256, which differs from Keccak-256 in its
 domain-separation byte (0x06 vs 0x01), so every Ethereum function selector and
 every merkle leaf computed with hashlib would be wrong.  Rather than pull in
 pycryptodome/eth-hash we implement the permutation directly; it is ~40 lines and
-is covered by the test vectors in ``tests/test_keccak.py``.
+is covered by the test vectors in ``tests/test_keccak_abi.py``.
 """
 
 from __future__ import annotations

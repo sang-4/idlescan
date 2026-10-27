@@ -28,6 +28,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("not a valid EVM address", err)
 
+    def test_version_flag(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as ctx:
+            main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertRegex(out.getvalue().strip(), r"^idlescan \d+\.\d+\.\d+$")
+
     def test_chains_listing(self):
         code, out, _ = run_cli("chains")
         self.assertEqual(code, 0)
@@ -42,9 +49,16 @@ class CliTests(unittest.TestCase):
         self.assertTrue(all(c["rpcs"] for c in payload))
 
     def test_tokens_listing(self):
-        code, out, _ = run_cli("tokens", "--chain", "ethereum")
+        code, out, _ = run_cli("tokens", "list", "--chain", "ethereum")
         self.assertEqual(code, 0)
         self.assertIn("USDC", out)
+
+    def test_tokens_legacy_flags_still_work_without_list_subcommand(self):
+        code, out, err = run_cli("tokens", "--chain", "ethereum", "--json")
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertIn("ethereum", payload)
+        self.assertTrue(all(token["address"].startswith("0x") for token in payload["ethereum"]))
 
     def test_selftest_json(self):
         code, out, _ = run_cli("selftest", "--json")
@@ -171,7 +185,7 @@ class PlatformCliTests(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertIn("nothing was saved", out)
         self.assertIn("demo-merkle", out)
-        self.assertIn("$607.01", out)
+        self.assertIn("$606.51", out)
         self.assertIn("tracked", out)
 
         code, out, err = run_cli(

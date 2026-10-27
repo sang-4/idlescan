@@ -8,17 +8,20 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+from . import __version__
 from .abi import normalise_address
 from .cache import Cache
 from .chains import ConfigError, load_chains, load_tokens
+from .config import SettingsError, load_settings
+from .dataset import DatasetError, dataset_provenance, parse_dataset_file
+from .db import Database
 from .prices import PriceOracle
 from .registry import load_registry
 from .report import export, render_console, render_markdown, to_dict
 from .rpc import Rpc
 from .scanner import Scanner
 from .selftest import describe_invariants, run_selftest
-from .config import SettingsError, load_settings
-from .service import PlatformService, ServiceError
+from .service import Conflict, PlatformService, ServiceError
 from .verify import verify_drops
 
 BANNER = "idlescan - airdrop research desk (read-only by default)"
@@ -35,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Always verify the distributor address in the project's official docs."
         ),
     )
+    parser.add_argument("--version", action="version", version=f"idlescan {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     scan = sub.add_parser("scan", help="scan wallets for idle balances and unclaimed allocations")
@@ -71,9 +75,22 @@ def build_parser() -> argparse.ArgumentParser:
     demo.add_argument("--json", action="store_true")
     demo.add_argument("--markdown", action="store_true")
 
-    dataset = sub.add_parser(
-        "dataset", help="validate a merkle claims file against a distributor contract"
-    )
+    doctor = sub.add_parser("doctor", help="check configuration, database and (optionally) RPC endpoints")
+    doctor.add_argument("--offline", action="store_true", help="offline mode: no RPC or HTTP request (default)")
+    doctor.add_argument("--online", action="store_true", help="probe configured RPC endpoints")
+    doctor.add_argument("--json", action="store_true")
+    doctor.add_argument("--env-file", type=Path)
+    doctor.add_argument("--db", type=Path)
+    doctor.add_argument("--chains-file", type=Path)
+    doctor.add_argument("--tokens-file", type=Path)
+
+    about = sub.add_parser("about", help="safe diagnostics for support emails (no secrets, no network)")
+    about.add_argument("--json", action="store_true")
+    about.add_argument("--env-file", type=Path)
+    about.add_argument("--db", type=Path)
+    about.add_argument("--chains-file", type=Path)
+
+    dataset = sub.add_parser("dataset", help="validate a merkle claims file against a distributor contract")
     dataset.add_argument("path", type=Path, help="claims JSON to validate")
     dataset.add_argument("--distributor", required=True, help="distributor contract address")
     dataset.add_argument("--chain", required=True, help="chain key for the contract")
@@ -93,11 +110,60 @@ def build_parser() -> argparse.ArgumentParser:
     chains.add_argument("--chains-file", type=Path)
     chains.add_argument("--json", action="store_true")
 
-    tokens = sub.add_parser("tokens", help="list configured tokens")
+    tokens = sub.add_parser("tokens", help="list and manage configured tokens")
+    # Legacy v1.1 flags: `idlescan tokens --chain ethereum` must keep working
+    # without the `list` subcommand.
     tokens.add_argument("--chain", help="only this chain")
     tokens.add_argument("--tokens-file", type=Path)
     tokens.add_argument("--chains-file", type=Path)
     tokens.add_argument("--json", action="store_true")
+    tokens.add_argument("--env-file", type=Path)
+    tokens.add_argument("--db", type=Path)
+    token_sub = tokens.add_subparsers(dest="token_command")
+    token_list = token_sub.add_parser("list", help="list curated and custom tokens")
+    token_list.add_argument("--chain", help="only this chain")
+    token_list.add_argument("--tokens-file", type=Path)
+    token_list.add_argument("--chains-file", type=Path)
+    token_list.add_argument("--json", action="store_true")
+    token_list.add_argument("--env-file", type=Path)
+    token_list.add_argument("--db", type=Path)
+
+    token_add = token_sub.add_parser("add", help="add a custom token")
+    token_add.add_argument("chain", help="chain key")
+    token_add.add_argument("address", help="token contract address (0x-prefixed)")
+    token_add.add_argument("symbol", help="token symbol")
+    token_add.add_argument("decimals", type=int, help="token decimals")
+    token_add.add_argument("--source", default="manual", help="source label (default: manual)")
+    token_add.add_argument("--json", action="store_true")
+    token_add.add_argument("--env-file", type=Path)
+    token_add.add_argument("--db", type=Path)
+
+    token_rm = token_sub.add_parser("rm", help="remove a custom token")
+    token_rm.add_argument("chain", help="chain key")
+    token_rm.add_argument("address", help="token contract address (0x-prefixed)")
+    token_rm.add_argument("--json", action="store_true")
+    token_rm.add_argument("--env-file", type=Path)
+    token_rm.add_argument("--db", type=Path)
+
+    registry = sub.add_parser(
+        "registry", help="validate, import and export the airdrops registry"
+    )
+    registry_sub = registry.add_subparsers(dest="registry_command", required=True)
+    registry_import = registry_sub.add_parser(
+        "import", help="validate a registry file against the schema and chains"
+    )
+    registry_import.add_argument("source", help="registry JSON file path or https URL")
+    registry_import.add_argument("--chains-file", type=Path)
+    registry_import.add_argument("--schema", type=Path, help="JSON schema file (default: bundled)")
+    registry_import.add_argument("--json", action="store_true")
+    registry_import.add_argument("--env-file", type=Path)
+    registry_export = registry_sub.add_parser(
+        "export", help="export the bundled registry to a file"
+    )
+    registry_export.add_argument("out", type=Path, help="output file path")
+    registry_export.add_argument("--registry", type=Path, help="registry JSON to export (default: bundled)")
+    registry_export.add_argument("--json", action="store_true")
+    registry_export.add_argument("--env-file", type=Path)
 
     serve = sub.add_parser("serve", help="run the web UI and JSON API")
     serve.add_argument("--host", help="bind address (default: IDLESCAN_HOST or 127.0.0.1)")
@@ -138,18 +204,14 @@ def build_parser() -> argparse.ArgumentParser:
     claim_list.add_argument("--env-file", type=Path)
     claim_list.add_argument("--db", type=Path)
 
-    claim_prepare = claim_sub.add_parser(
-        "prepare", help="return an unsigned claim transaction (requires write mode)"
-    )
+    claim_prepare = claim_sub.add_parser("prepare", help="return an unsigned claim transaction (requires write mode)")
     claim_prepare.add_argument("drop_id")
     claim_prepare.add_argument("wallet")
     claim_prepare.add_argument("--json", action="store_true")
     claim_prepare.add_argument("--env-file", type=Path)
     claim_prepare.add_argument("--db", type=Path)
 
-    claim_confirm = claim_sub.add_parser(
-        "confirm", help="record a submitted claim transaction (requires write mode)"
-    )
+    claim_confirm = claim_sub.add_parser("confirm", help="record a submitted claim transaction (requires write mode)")
     claim_confirm.add_argument("drop_id")
     claim_confirm.add_argument("wallet")
     claim_confirm.add_argument("tx_hash")
@@ -158,9 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
     claim_confirm.add_argument("--db", type=Path)
 
     alerts = sub.add_parser("alerts", help="review alerts from the local database")
-    alerts.add_argument("--all", action="store_true", help="include acknowledged alerts")
+    alerts.add_argument("--all", action="store_true", help="include acknowledged and resolved alerts")
     alerts.add_argument("--ack", type=int, metavar="ID", help="acknowledge one alert")
     alerts.add_argument("--ack-all", action="store_true", help="acknowledge every open alert")
+    alerts.add_argument("--resolve", type=int, metavar="ID", help="resolve one alert condition")
+    alerts.add_argument("--reopen", type=int, metavar="ID", help="reopen a resolved alert")
+    alerts.add_argument("--reason", default="resolved by operator", help="reason for --resolve")
     alerts.add_argument("--json", action="store_true")
     alerts.add_argument("--env-file", type=Path)
     alerts.add_argument("--db", type=Path)
@@ -176,6 +241,35 @@ def build_parser() -> argparse.ArgumentParser:
     backup.add_argument("--json", action="store_true")
     backup.add_argument("--env-file", type=Path)
     backup.add_argument("--db", type=Path)
+
+    db = sub.add_parser("db", help="inspect, migrate, check and prune the local database")
+    db_sub = db.add_subparsers(dest="db_command", required=True)
+    db_status = db_sub.add_parser("status", help="show schema version, size and row counts")
+    db_status.add_argument("--json", action="store_true")
+    db_status.add_argument("--env-file", type=Path)
+    db_status.add_argument("--db", type=Path)
+
+    db_migrate = db_sub.add_parser("migrate", help="apply pending schema migrations")
+    db_migrate.add_argument("--json", action="store_true")
+    db_migrate.add_argument("--env-file", type=Path)
+    db_migrate.add_argument("--db", type=Path)
+
+    db_check = db_sub.add_parser("check", help="integrity and consistency checks (read-only)")
+    db_check.add_argument("--json", action="store_true")
+    db_check.add_argument("--env-file", type=Path)
+    db_check.add_argument("--db", type=Path)
+
+    db_prune = db_sub.add_parser("prune", help="delete history outside retention windows (dry-run by default)")
+    db_prune.add_argument("--yes", action="store_true", help="actually delete rows")
+    db_prune.add_argument("--snapshots", type=int, help="snapshots to keep (default: setting)")
+    db_prune.add_argument("--alerts-days", type=int)
+    db_prune.add_argument("--audit-days", type=int)
+    db_prune.add_argument("--executions-days", type=int)
+    db_prune.add_argument("--jobs-days", type=int)
+    db_prune.add_argument("--vacuum", action="store_true", help="VACUUM after deleting")
+    db_prune.add_argument("--json", action="store_true")
+    db_prune.add_argument("--env-file", type=Path)
+    db_prune.add_argument("--db", type=Path)
 
     calendar = sub.add_parser("calendar", help="export airdrop deadlines as an iCalendar feed")
     calendar.add_argument("--drop", help="only this airdrop id")
@@ -258,9 +352,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         return 130
 
     if args.min_usd > 0:
-        report.holdings = [
-            h for h in report.holdings if h.usd_value is None or h.usd_value >= args.min_usd
-        ]
+        report.holdings = [h for h in report.holdings if h.usd_value is None or h.usd_value >= args.min_usd]
 
     if args.json:
         print(json.dumps(to_dict(report), indent=2))
@@ -327,23 +419,49 @@ def cmd_selftest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    from .doctor import FAIL, WARN, run_doctor
+
+    settings = _settings(args)
+    if getattr(args, "db", None):
+        settings = settings.with_overrides(db_path=args.db)
+    report = run_doctor(
+        settings,
+        online=bool(args.online) and not bool(args.offline),
+        chains_file=getattr(args, "chains_file", None),
+        tokens_file=getattr(args, "tokens_file", None),
+    )
+    if args.json:
+        print(json.dumps(report, indent=2))
+        return 0 if report["ok"] and report["warnings"] == 0 else 1
+    print(f"idlescan {report['version']}  ·  {report['failures']} failure(s), {report['warnings']} warning(s)")
+    for check in report["checks"]:
+        marker = {FAIL: "FAIL", WARN: "warn", "ok": "ok  "}[check["status"]]
+        print(f"  {marker}  {check['name']:<19} {check['detail']}")
+        if check.get("hint") and check["status"] != "ok":
+            print(f"        hint: {check['hint']}")
+    return 0 if report["ok"] and report["warnings"] == 0 else 1
+
+
 def cmd_dataset(args: argparse.Namespace) -> int:
     from .abi import calldata
-    from .merkle import parse_dataset, verify_proof
+    from .merkle import verify_proof
     from .verify import detect_proof_mode
 
     chains = load_chains(args.chains_file)
     chain = chains.get(args.chain)
     try:
-        payload = json.loads(args.path.read_text())
-    except OSError as exc:
+        dataset = parse_dataset_file(args.path)
+    except (OSError, DatasetError) as exc:
         print(f"cannot read {args.path}: {exc}", file=sys.stderr)
         return 2
-    except json.JSONDecodeError as exc:
-        print(f"{args.path} is not valid JSON: {exc}", file=sys.stderr)
-        return 2
-
-    dataset = parse_dataset(payload, source=str(args.path))
+    provenance = dataset_provenance(
+        args.path,
+        drop_id="",
+        root=dataset.root,
+        entry_count=len(dataset),
+        tool_version=__version__,
+    )
     root: bytes | None = None
     root_source = "argument"
     if args.root:
@@ -362,14 +480,10 @@ def cmd_dataset(args: argparse.Namespace) -> int:
     checks.append((len(dataset) > 0, f"{len(dataset)} claims parsed"))
     if dataset.root and root:
         label = "contract" if args.root is None else "reference root"
-        checks.append(
-            (
-                dataset.root == root,
-                f"file root matches {label}"
-                if dataset.root == root
-                else f"file root MISMATCHES {label}",
-            )
-        )
+        checks.append((
+            dataset.root == root,
+            f"file root matches {label}" if dataset.root == root else f"file root MISMATCHES {label}",
+        ))
     elif dataset.root and not root:
         checks.append((None, "contract root unavailable"))
     elif root and not dataset.root:
@@ -379,15 +493,26 @@ def cmd_dataset(args: argparse.Namespace) -> int:
     verified = failed = 0
     if root:
         mode = detect_proof_mode(dataset, root)
-        checks.append((True if mode else False, f"leaf encoding {mode[0]}{' double-hashed' if mode and mode[1] else ''}" if mode else "no leaf encoding reproduces the root"))
+        checks.append((
+            True if mode else False,
+            f"leaf encoding {mode[0]}{' double-hashed' if mode and mode[1] else ''}"
+            if mode
+            else "no leaf encoding reproduces the root",
+        ))
         if mode:
             items = list(dataset.claims.items())
             if not args.all_proofs:
                 items = items[:25]
             for account, claim in items:
                 if verify_proof(
-                    claim.index, account, claim.amount, claim.proof, root,
-                    encoding=mode[0], double_hash=mode[1], sort_pairs=dataset.sort_pairs,
+                    claim.index,
+                    account,
+                    claim.amount,
+                    claim.proof,
+                    root,
+                    encoding=mode[0],
+                    double_hash=mode[1],
+                    sort_pairs=dataset.sort_pairs,
                 ):
                     verified += 1
                 else:
@@ -395,18 +520,25 @@ def cmd_dataset(args: argparse.Namespace) -> int:
             checks.append((failed == 0, f"{verified} proofs verified, {failed} failed"))
 
     if args.json:
-        print(json.dumps({
-            "path": str(args.path),
-            "claims": len(dataset),
-            "root": "0x" + root.hex() if root else None,
-            "root_source": root_source,
-            "encoding": mode[0] if mode else None,
-            "proofs_verified": verified,
-            "proofs_failed": failed,
-            "checks": [{"ok": ok, "detail": detail} for ok, detail in checks],
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "path": str(args.path),
+                    "claims": len(dataset),
+                    "root": "0x" + root.hex() if root else None,
+                    "root_source": root_source,
+                    "encoding": mode[0] if mode else None,
+                    "proofs_verified": verified,
+                    "proofs_failed": failed,
+                    "checks": [{"ok": ok, "detail": detail} for ok, detail in checks],
+                    "provenance": provenance.as_dict(),
+                },
+                indent=2,
+            )
+        )
     else:
         print(f"{args.path}: {len(dataset)} claims")
+        print(f"sha256: {provenance.sha256}  ({provenance.byte_size:,} bytes)")
         if root:
             print(f"root ({root_source}): 0x{root.hex()}")
         for ok, detail in checks:
@@ -442,24 +574,78 @@ def cmd_chains(args: argparse.Namespace) -> int:
 
 
 def cmd_tokens(args: argparse.Namespace) -> int:
-    chains = load_chains(args.chains_file)
-    tokens = load_tokens(chains, args.tokens_file)
-    keys = [args.chain.lower()] if args.chain else sorted(tokens)
-    if args.json:
-        payload = {
-            key: [
-                {"symbol": t.symbol, "address": t.address, "decimals": t.decimals}
-                for t in tokens.get(key, [])
-            ]
-            for key in keys
-        }
-        print(json.dumps(payload, indent=2))
+    command = args.token_command or "list"
+    if command == "list":
+        chains = load_chains(args.chains_file)
+        tokens = load_tokens(chains, args.tokens_file)
+        # Add custom tokens from the database
+        settings = _settings(args)
+        override = getattr(args, "db", None)
+        if override:
+            settings = settings.with_overrides(db_path=override)
+        db = Database(settings.db_path)
+        custom = db.list_custom_tokens(args.chain)
+        keys = [args.chain.lower()] if args.chain else sorted(tokens)
+        if args.json:
+            payload: dict[str, list[dict]] = {}
+            for key in keys:
+                chain_tokens = [
+                    {"symbol": t.symbol, "address": t.address, "decimals": t.decimals, "custom": False}
+                    for t in tokens.get(key, [])
+                ]
+                for ct in custom:
+                    if ct["chain"] == key:
+                        chain_tokens.append(
+                            {
+                                "symbol": ct["symbol"],
+                                "address": ct["address"],
+                                "decimals": ct["decimals"],
+                                "custom": True,
+                                "source": ct["source"],
+                            }
+                        )
+                payload[key] = chain_tokens
+            print(json.dumps(payload, indent=2))
+            return 0
+        for key in keys:
+            print(f"{key}:")
+            for token in tokens.get(key, []):
+                print(f"  {token.symbol:<8} {token.decimals:>2}d  {token.address}")
+            for ct in custom:
+                if ct["chain"] == key:
+                    print(f"  {ct['symbol']:<8} {ct['decimals']:>2}d  {ct['address']}  (custom)")
         return 0
-    for key in keys:
-        print(f"{key}:")
-        for token in tokens.get(key, []):
-            print(f"  {token.symbol:<8} {token.decimals:>2}d  {token.address}")
-    return 0
+
+    if command == "add":
+        settings, service = _service(args)
+        try:
+            result = service.add_custom_token(
+                args.chain, args.address, args.symbol, args.decimals, source=args.source
+            )
+        except (ServiceError, ConfigError, Conflict) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"added custom token {args.symbol} on {args.chain}: {args.address}")
+        return 0
+
+    if command == "rm":
+        settings, service = _service(args)
+        try:
+            removed = service.remove_custom_token(args.chain, args.address)
+        except (ServiceError, ConfigError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not removed:
+            print(f"error: custom token {args.address} not found on {args.chain}", file=sys.stderr)
+            return 1
+        print(f"removed custom token {args.address} on {args.chain}")
+        return 0
+
+    print(f"error: unknown token command {command!r}", file=sys.stderr)
+    return 2
 
 
 def _settings(args: argparse.Namespace):
@@ -536,14 +722,23 @@ def cmd_scan_saved(args: argparse.Namespace) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     from .api import run
+    from .log import configure_logging
 
     settings = _settings(args)
+    configure_logging(settings.log_level, settings.log_format)
     settings = settings.with_overrides(
         host=args.host,
         port=args.port,
         db_path=args.db,
         demo=True if args.demo else None,
     )
+    if settings.demo and args.db is None:
+        # Keep the synthetic portfolio out of the real database.  Demo mode used
+        # to seed wallets and snapshots into the normal DB, which then survived
+        # turning IDLESCAN_DEMO off.  Pass --db to choose a location explicitly.
+        demo_path = settings.db_path.with_name("idlescan-demo.db")
+        settings = settings.with_overrides(db_path=demo_path)
+        print(f"demo database: {demo_path} (pass --db to override)")
     try:
         return run(settings)
     except Exception as exc:  # noqa: BLE001 - friendly startup failure
@@ -665,7 +860,9 @@ def cmd_claims(args: argparse.Namespace) -> int:
             print("no claim positions match")
             return 0
         print(f"snapshot #{snapshot['id']} · {snapshot['created_at']}")
-        print(f"{'DROP':<18} {'WALLET':<14} {'STATUS':<13} {'VALUE':>11} {'GAS':>9} {'NET':>11} {'DEADLINE':<12} PROOF")
+        print(
+            f"{'DROP':<18} {'WALLET':<14} {'STATUS':<13} {'VALUE':>11} {'GAS':>9} {'NET':>11} {'DEADLINE':<12} PROOF"
+        )
         for row in rows:
             proof = {1: "verified", 0: "MISMATCH"}.get(row["proof_verified"], "unverified")
             deadline = (row["deadline"] or "-")[:10]
@@ -690,7 +887,9 @@ def cmd_claims(args: argparse.Namespace) -> int:
         tx = result["transaction"]
         print(f"unsigned claim for {claim['name']} on {claim['chain']}")
         print(f"  amount   {claim['amount']} raw (decimals {claim['decimals']})")
-        print(f"  value    {_money(claim['usd_value'])} gross · {_money(claim['gas_usd'])} gas · {_money(claim['net_usd'])} net")
+        print(
+            f"  value    {_money(claim['usd_value'])} gross · {_money(claim['gas_usd'])} gas · {_money(claim['net_usd'])} net"
+        )
         print(f"  from     {tx['from']}")
         print(f"  to       {tx['to']}")
         print(f"  chainId  {tx['chainId']}")
@@ -702,9 +901,7 @@ def cmd_claims(args: argparse.Namespace) -> int:
         return 0
     if command == "confirm":
         try:
-            result = service.confirm_claim(
-                drop_id=args.drop_id, wallet=args.wallet, tx_hash=args.tx_hash
-            )
+            result = service.confirm_claim(drop_id=args.drop_id, wallet=args.wallet, tx_hash=args.tx_hash)
         except ServiceError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -728,6 +925,23 @@ def cmd_alerts(args: argparse.Namespace) -> int:
             print(f"error: alert {args.ack} not found", file=sys.stderr)
             return 1
         print(f"acknowledged alert {args.ack}")
+        return 0
+    if args.resolve is not None:
+        if not service.resolve_alert(args.resolve, args.reason):
+            print(f"error: alert {args.resolve} not found or already resolved", file=sys.stderr)
+            return 1
+        print(f"resolved alert {args.resolve}")
+        return 0
+    if args.reopen is not None:
+        try:
+            reopened = service.reopen_alert(args.reopen)
+        except ServiceError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        if not reopened:
+            print(f"error: alert {args.reopen} not found or not resolved", file=sys.stderr)
+            return 1
+        print(f"reopened alert {args.reopen}")
         return 0
     alerts = service.alerts(include_ack=args.all)
     if args.json:
@@ -777,6 +991,246 @@ def cmd_calendar(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_registry(args: argparse.Namespace) -> int:
+    from .chains import DATA_DIR, load_chains
+    from .registry import ConfigError, parse_registry
+    from .safe_http import FetchError, safe_fetch_json
+
+    if args.registry_command == "export":
+        registry_path = args.registry
+        if registry_path is None:
+            registry_path = DATA_DIR / "airdrops.json"
+        try:
+            data = json.loads(registry_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"error: cannot read registry {registry_path}: {exc}", file=sys.stderr)
+            return 2
+        target = args.out
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(data, indent=2) + "\n")
+        if args.json:
+            print(json.dumps({"path": str(target), "bytes": target.stat().st_size}, indent=2))
+        else:
+            print(f"wrote registry to {target} ({target.stat().st_size:,} bytes)")
+        return 0
+
+    if args.registry_command == "import":
+        chains = load_chains(args.chains_file)
+
+        # Read source (file or https URL)
+        source = args.source
+        is_url = source.startswith("http://") or source.startswith("https://")
+        if is_url:
+            try:
+                data = safe_fetch_json(source)
+            except FetchError as exc:
+                print(f"error: cannot fetch {source}: {exc}", file=sys.stderr)
+                return 2
+        else:
+            try:
+                data = json.loads(Path(source).read_text())
+            except FileNotFoundError:
+                print(f"error: registry file not found: {source}", file=sys.stderr)
+                return 2
+            except json.JSONDecodeError as exc:
+                print(f"error: {source}: invalid JSON ({exc})", file=sys.stderr)
+                return 2
+
+        if not isinstance(data, dict):
+            print("error: registry must be a JSON object", file=sys.stderr)
+            return 2
+
+        # Basic schema validation
+        problems = _validate_registry_shape(data)
+        if problems:
+            for problem in problems:
+                print(f"schema: {problem}", file=sys.stderr)
+            return 2
+
+        # Parse against chains
+        try:
+            drops = parse_registry(data, chains)
+        except ConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+        accepted = len(drops)
+        total = len(data.get("airdrops") or [])
+        rejected = total - accepted
+        if args.json:
+            print(json.dumps({
+                "source": source,
+                "accepted": accepted,
+                "rejected": rejected,
+                "drops": [{"id": d.id, "chain": d.chain, "distributor": d.distributor} for d in drops],
+            }, indent=2))
+        else:
+            print(f"registry import: {accepted} accepted, {rejected} rejected")
+            for d in drops:
+                print(f"  OK   {d.id:<30} {d.chain:<12} {d.distributor}")
+        return 0
+
+    print(f"error: unknown registry command {args.registry_command!r}", file=sys.stderr)
+    return 2
+
+
+def _validate_registry_shape(data: dict) -> list[str]:
+    """Basic structural validation of a registry document."""
+    problems: list[str] = []
+    airdrops = data.get("airdrops")
+    if not isinstance(airdrops, list):
+        problems.append("'airdrops' must be an array")
+        return problems
+    seen: set[str] = set()
+    for index, raw in enumerate(airdrops):
+        where = f"airdrops[{index}]"
+        if not isinstance(raw, dict):
+            problems.append(f"{where}: must be an object")
+            continue
+        drop_id = raw.get("id")
+        if not isinstance(drop_id, str) or not drop_id:
+            problems.append(f"{where}: missing or empty 'id'")
+            continue
+        if drop_id in seen:
+            problems.append(f"{where}: duplicate id {drop_id!r}")
+        seen.add(drop_id)
+        for field in ("chain", "distributor"):
+            if not raw.get(field):
+                problems.append(f"{where}: missing '{field}'")
+        distributor = raw.get("distributor", "")
+        if distributor and not distributor.lower().startswith("0x"):
+            problems.append(f"{where}: distributor must be a 0x-prefixed address")
+        token = raw.get("token")
+        if token and not token.lower().startswith("0x"):
+            problems.append(f"{where}: token must be a 0x-prefixed address")
+    return problems
+
+
+def _db_path(args: argparse.Namespace) -> Path:
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+    return settings.db_path
+
+
+def cmd_db(args: argparse.Namespace) -> int:
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+
+    if args.db_command == "status":
+        payload = Database(settings.db_path).status()
+        if args.json:
+            print(json.dumps(payload, indent=2, default=str))
+            return 0
+        print(f"path            {payload['path']}")
+        print(f"exists          {'yes' if payload['exists'] else 'no'}")
+        print(f"size            {payload['size_bytes']:,} bytes")
+        print(
+            f"schema          v{payload['schema_version']} "
+            f"(latest v{payload['latest_schema_version']})"
+            + ("" if payload["up_to_date"] else f"  ·  {payload['pending_migrations']} pending")
+        )
+        for table, count in payload["counts"].items():
+            print(f"{table:<15} {count:,}")
+        if payload["latest_snapshot"]:
+            latest = payload["latest_snapshot"]
+            print(f"latest snapshot #{latest['id']}  {latest['created_at']}  ({latest['trigger']})")
+        return 0
+
+    if args.db_command == "migrate":
+        db = Database(settings.db_path)
+        before = db.status()
+        db.init()
+        after = db.status()
+        backup = None
+        if before["schema_version"]:
+            candidate = settings.db_path.with_name(f"{settings.db_path.name}.pre-v{before['schema_version']}.bak")
+            if candidate.is_file():
+                backup = str(candidate)
+        payload = {
+            "path": str(settings.db_path),
+            "from_version": before["schema_version"],
+            "to_version": after["schema_version"],
+            "applied": getattr(db, "applied_migrations", []),
+            "backup": backup,
+        }
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        if payload["applied"]:
+            print(
+                f"migrated {payload['path']} from v{payload['from_version']} "
+                f"to v{payload['to_version']} ({payload['applied']})"
+            )
+            if backup:
+                print(f"pre-migration backup: {backup}")
+        else:
+            print(f"{payload['path']} is already at schema v{payload['to_version']}")
+        return 0
+
+    if args.db_command == "check":
+        payload = Database(settings.db_path).check()
+        if args.json:
+            print(json.dumps(payload, indent=2))
+        elif payload["ok"]:
+            print(f"ok: {payload['checks']['counts']} schema v{payload['schema_version']}")
+        else:
+            print("database check found problems:", file=sys.stderr)
+            for problem in payload["problems"]:
+                print(f"  - {problem}", file=sys.stderr)
+        return 0 if payload["ok"] else 1
+
+    if args.db_command == "prune":
+
+        def choose(value, setting):
+            return setting if value is None else value
+
+        db = Database(settings.db_path).init()
+        payload = db.prune(
+            snapshots=choose(args.snapshots, settings.retention_snapshots),
+            alerts_days=choose(args.alerts_days, settings.retention_alerts_days),
+            audit_days=choose(args.audit_days, settings.retention_audit_days),
+            executions_days=choose(args.executions_days, settings.retention_executions_days),
+            jobs_days=choose(args.jobs_days, settings.retention_jobs_days),
+            dry_run=not args.yes,
+            vacuum=args.vacuum,
+        )
+        if args.json:
+            print(json.dumps(payload, indent=2))
+            return 0
+        if not payload["deleted"]:
+            print("nothing to prune")
+            return 0
+        verb = "would delete" if payload["dry_run"] else "deleted"
+        for table, count in payload["deleted"].items():
+            print(f"{verb:<13} {count:>6} {table}")
+        if payload["dry_run"]:
+            print("dry run: re-run with --yes to apply")
+        elif payload["vacuumed"]:
+            print("vacuumed")
+        return 0
+
+    raise SystemExit(f"unknown db command {args.db_command!r}")
+
+
+def cmd_about(args: argparse.Namespace) -> int:
+    from .about import collect, render_text
+
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+    payload = collect(settings, chains_file=getattr(args, "chains_file", None))
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(render_text(payload))
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     _, service = _service(args)
     try:
@@ -799,6 +1253,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         "verify": cmd_verify,
         "selftest": cmd_selftest,
         "dataset": cmd_dataset,
+        "doctor": cmd_doctor,
+        "about": cmd_about,
         "chains": cmd_chains,
         "tokens": cmd_tokens,
         "serve": cmd_serve,
@@ -808,7 +1264,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         "alerts": cmd_alerts,
         "export": cmd_export,
         "backup": cmd_backup,
+        "db": cmd_db,
         "calendar": cmd_calendar,
+        "registry": cmd_registry,
     }
     try:
         return handlers[args.command](args)

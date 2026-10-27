@@ -72,7 +72,7 @@ def encode(types: Sequence[str], values: Sequence[Any]) -> bytes:
     tails: list[bytes] = []
     head_size = WORD * len(types)
 
-    for type_name, value in zip(types, values):
+    for type_name, value in zip(types, values, strict=False):
         if not _is_dynamic(type_name):
             heads.append(_encode_word(type_name, value))
             continue
@@ -98,7 +98,7 @@ def encode(types: Sequence[str], values: Sequence[Any]) -> bytes:
 def encode_packed(types: Sequence[str], values: Sequence[Any]) -> bytes:
     """Solidity ``abi.encodePacked`` for the static types used in merkle leaves."""
     out = bytearray()
-    for type_name, value in zip(types, values):
+    for type_name, value in zip(types, values, strict=False):
         if _is_dynamic(type_name):
             raise AbiError("encode_packed does not support dynamic types here")
         word = _encode_word(type_name, value)

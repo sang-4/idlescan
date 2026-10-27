@@ -6,9 +6,11 @@ merkle proofs against the on-chain root, and tracks what changed between scans �
 web UI and from the CLI. You can also check any address without adding it to your
 watchlist.
 
-Read-only by default. One `.env` switch unlocks the only state-changing feature: handing
-an **unsigned** claim transaction to your own browser wallet. The server never holds
-keys, never signs, and never broadcasts.
+Read-only by default. One `.env` switch unlocks **on-chain claim hand-off**: returning an
+**unsigned** claim transaction for your own browser wallet to review and sign. Local
+administrative writes — adding wallets or airdrops, saving scans, acknowledging alerts,
+writing backups — work in either mode. The server never holds keys, never signs, and
+never broadcasts.
 
 ```bash
 cd idlescan
@@ -30,9 +32,17 @@ answers "not claimed" for every address on earth. `idlescan` separates the two q
    distributor, read live.
 
 Then it answers the question that actually matters: **is the claim worth the gas?**
-Allocations are ranked by net USD after `eth_estimateGas` × `eth_gasPrice`, not by
-headline token value. Anything it cannot verify is shown as `unknown` or
-`no eligibility source` — never as "nothing to claim".
+Allocations are ranked by net USD after an EIP-1559-aware fee quote, not by headline
+token value. Anything it cannot verify is shown as `unknown` or `no eligibility source`
+— never as "nothing to claim".
+
+> **Gas estimate.** Gas is estimated from `eth_estimateGas` and the current gas price.
+> It may exclude layer-2 data fees and will differ from the final cost. L1 data fees are
+> included only where the chain exposes an oracle, and are labelled `partial` when they
+> are. See `docs/DECISIONS.md` (D-002).
+
+**Research tool, not financial advice. Verify contract addresses against official
+sources.**
 
 ## What you get
 
@@ -42,7 +52,7 @@ headline token value. Anything it cannot verify is shown as `unknown` or
 | **Check** | `#/check` or `#/check/<address>` — read-only eligibility check for any address across every enabled drop, with per-position value, gas, net, deadline and proof status. Nothing is persisted, so it doubles as a public checker when the instance is exposed |
 | **Airdrops** | Registry board with phase filters, sorting, verifiable safety score (eligibility source, proof verification, links, deadline), dataset status, per-drop unclaimed value |
 | **Airdrop profile** | `#/drop/<id>` — contract provenance with explorer links, eligibility source, proof counts, status breakdown, value history, tracked positions, executions and alerts, per-drop JSON/CSV/Markdown exports |
-| **Claims** | Profitability-ranked positions, gas-adjusted net, proof status, one-click **unsigned** transaction hand-off (write mode) |
+| **Claims** | Net-value-ranked positions, gas-adjusted net, proof status, one-click **unsigned** transaction hand-off (write mode) |
 | **Wallets** | Watch-only addresses with labels and tags, per-wallet rollups, and bulk import of up to 200 addresses (address or `address, label, tags` per line) with per-row validation |
 | **Wallet profile** | `#/wallet/<address>` — idle/unclaimed/claimed totals, allocation history, chain mix, full position and balance tables, linked executions and alerts |
 | **Alerts** | Deadline <14 days, below-gas claims, invalid proofs, new allocations, confirmed claims, missing datasets |
@@ -185,7 +195,10 @@ anything, ask for token approvals, or request off-chain signatures. Your browser
 
 Extra guards:
 
-- Write mode refuses to start on a non-loopback host unless
+- `serve` refuses to start on a non-loopback host unless `IDLESCAN_AUTH_TOKEN` is set
+  or you explicitly accept the risk with `IDLESCAN_ALLOW_INSECURE_REMOTE=true`. The
+  override prints a startup warning and shows a persistent banner in the UI.
+- Write mode additionally refuses a non-loopback host unless
   `IDLESCAN_ALLOW_REMOTE_WRITE=true` is also set.
 - Every state-changing request needs the `X-Idlescan: 1` header; an `Origin` header, if
   present, must match the server. Random web pages cannot POST to a locally served
@@ -267,9 +280,12 @@ All settings are optional except the toggle. Environment variables win over `.en
 | `IDLESCAN_CHAINS` | empty = all | comma-separated chain keys |
 | `IDLESCAN_MIN_USD` | `1.0` | dust threshold |
 | `IDLESCAN_REFRESH_MINUTES` | `0` | background rescan interval (0 = manual) |
+| `IDLESCAN_AUTH_TOKEN` | — | require `Authorization: Bearer <token>` on API calls |
+| `IDLESCAN_ALLOW_INSECURE_REMOTE` | `false` | allow a non-loopback bind without an auth token (warns loudly) |
 | `IDLESCAN_ALLOW_REMOTE_WRITE` | `false` | permit write mode on a non-loopback host |
+| `IDLESCAN_LOCKDOWN` | `false` | refuse local administrative writes; reads and exports still work |
 | `IDLESCAN_DATASET_DIR` | — | extra directory for claim datasets |
-| `IDLESCAN_DEMO` | `false` | seed/use synthetic demo data |
+| `IDLESCAN_DEMO` | `false` | seed/use synthetic demo data in a separate `idlescan-demo.db` |
 
 Chain and token metadata live in `idlescan/data/chains.json` and
 `idlescan/data/tokens.json`. Replace `rpcs` with your own provider for speed; every
@@ -439,8 +455,11 @@ outbound traffic is read-only RPC calls plus DefiLlama price lookups.
 If you must expose it:
 
 1. Keep `IDLESCAN_READ_ONLY=true` unless you have a specific reason not to.
-2. Put a reverse proxy with TLS and authentication in front; there is no built-in auth.
-3. If write mode is truly required remotely, set `IDLESCAN_ALLOW_REMOTE_WRITE=true` and
+2. Set `IDLESCAN_AUTH_TOKEN` to a long random value; the API then requires
+   `Authorization: Bearer <token>`. Put a TLS-terminating reverse proxy in front as well.
+3. Non-loopback binds are refused without a token or the explicit
+   `IDLESCAN_ALLOW_INSECURE_REMOTE=true` override.
+4. If write mode is truly required remotely, set `IDLESCAN_ALLOW_REMOTE_WRITE=true` and
    understand that the remote client still signs in its own wallet. Prefer a VPN.
 4. Back up `data/idlescan.db` like any other research record — or let
    `idlescan backup` / Settings → Maintenance write a consistent copy to
@@ -449,11 +468,11 @@ If you must expose it:
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests     # 149 tests, no network required
+python3 -m unittest discover -s tests     # 388 tests, no network required
 ```
 
 The Keccak-256 implementation is checked against canonical vectors, the merkle code
-against Uniswap's own `complex_example.json` fixture (MIT) with a root produced by ethers
+against Uniswap's own `complex_example.json` fixture (GPL-3.0, test-only) with a root produced by ethers
 v5, and the scanner against a mock chain covering claimed/unclaimed, missing
 allocations, root mismatches, tampered proofs, and encoding auto-detection. The platform
 adds tests for the `.env` contract, SQLite persistence, history rollups, the write gate
@@ -476,7 +495,10 @@ bulk wallet import, path sanitisation in alerts, and demo seeding.
 
 ## License
 
-MIT. `tests/fixtures/uniswap_complex_example.json` is from
-[Uniswap/merkle-distributor](https://github.com/Uniswap/merkle-distributor) (GPL-3.0),
-used only as a test fixture.
+Proprietary single-user license, copyright 2026 Allan Kiprop. See `LICENSE` for the
+terms and `NOTICE` for the required notice. `tests/fixtures/uniswap_complex_example.json`
+is from [Uniswap/merkle-distributor](https://github.com/Uniswap/merkle-distributor)
+(GPL-3.0), used only by the test suite and excluded from the distributed release,
+wheel and sdist. See `THIRD_PARTY.md`. idlescan ships no third-party runtime code; it
+imports only the Python standard library.
 # idlescan

@@ -1,0 +1,36 @@
+# idlescan deployment with Docker Compose.
+# Binds to 127.0.0.1 by default — not exposed to the host network.
+# Put a TLS reverse proxy (e.g. Caddy) in front for remote access.
+#
+#   docker compose up -d
+#
+version: "3.8"
+
+services:
+  idlescan:
+    build: .
+    container_name: idlescan
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - IDLESCAN_HOST=0.0.0.0
+      - IDLESCAN_PORT=8787
+      - IDLESCAN_DB=/data/idlescan.db
+      - IDLESCAN_READ_ONLY=true
+      # Uncomment and set to enable claim hand-off behind TLS + auth:
+      # - IDLESCAN_READ_ONLY=false
+      # - IDLESCAN_ALLOW_REMOTE_WRITE=true
+      # - IDLESCAN_AUTH_TOKEN=change-me
+      # - IDLESCAN_RATE_LIMIT_LOOPBACK=true
+    volumes:
+      - idlescan_data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/api/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  idlescan_data:

@@ -14,6 +14,7 @@ Design notes
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -21,6 +22,9 @@ import signal
 import socket
 import sys
 import threading
+import time
+import uuid
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -28,10 +32,147 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Settings
-from .service import Conflict, NotFound, PlatformService, ServiceError, WriteDisabled
+from .gas import GAS_ESTIMATE_NOTE
+from .redaction import redact_text
+from .report import DISCLAIMER
+from .service import (
+    Conflict,
+    Lockdown,
+    NotFound,
+    PlatformService,
+    ServiceError,
+    WriteDisabled,
+)
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 MAX_BODY = 1_000_000
+
+
+class PayloadTooLarge(ServiceError):
+    status = 413
+
+
+class UnsupportedMediaType(ServiceError):
+    status = 415
+
+
+class TooManyRequests(ServiceError):
+    status = 429
+
+
+class Unauthorized(ServiceError):
+    status = 401
+
+
+class MethodNotAllowed(ServiceError):
+    status = 405
+
+
+class RateLimiter:
+    """In-process token buckets keyed by client and request class."""
+
+    def __init__(self) -> None:
+        self._buckets: dict[tuple[str, str], tuple[float, float]] = {}
+        self._lock = threading.Lock()
+
+    def check(self, key: tuple[str, str], capacity: int, window: float) -> tuple[bool, int]:
+        if capacity <= 0:
+            return False, int(window)
+        now = time.monotonic()
+        with self._lock:
+            tokens, last = self._buckets.get(key, (float(capacity), now))
+            tokens = min(float(capacity), tokens + (now - last) * capacity / window)
+            if tokens < 1.0:
+                retry = max(1, int((1.0 - tokens) * window / capacity) + 1)
+                self._buckets[key] = (tokens, now)
+                return False, retry
+            self._buckets[key] = (tokens - 1.0, now)
+            return True, 0
+
+
+_ADDRESS_IN_PATH = re.compile(r"0x[0-9a-fA-F]{40}")
+
+
+def metric_path(path: str) -> str:
+    """Bucket a request path for counters without unbounded cardinality.
+
+    Wallet addresses and numeric ids are replaced by placeholders.  Airdrop
+    slugs are kept (they are operator-visible already); anything beyond
+    ``max_paths`` distinct buckets is folded into ``other``.
+    """
+    if not path.startswith("/api/"):
+        return "static"
+    trimmed = _ADDRESS_IN_PATH.sub(":address", path.split("?", 1)[0])
+    trimmed = re.sub(r"/\d+(?=/|$)", "/:id", trimmed)
+    return trimmed[:120] or "/api"
+
+
+class ServerMetrics:
+    """Thread-safe request counters for ``/api/metrics`` and ``/api/health``."""
+
+    def __init__(self, max_paths: int = 40) -> None:
+        self.max_paths = max_paths
+        self._lock = threading.Lock()
+        self.started_monotonic = time.monotonic()
+        self.started_at = datetime.now(timezone.utc).replace(microsecond=0)
+        self.requests = 0
+        self.in_flight = 0
+        self.errors = 0
+        self.unauthorized = 0
+        self.rate_limited = 0
+        self.by_method: dict[str, int] = {}
+        self.by_status: dict[str, int] = {}
+        self.by_path: dict[str, int] = {}
+        self.overflow = 0
+        self.last_request_at: str | None = None
+        self.last_status: int | None = None
+
+    def begin(self) -> None:
+        with self._lock:
+            self.in_flight += 1
+
+    def record(self, method: str, path: str, status: int, duration_ms: float) -> None:
+        bucket = metric_path(path)
+        with self._lock:
+            self.in_flight = max(0, self.in_flight - 1)
+            self.requests += 1
+            self.last_status = status
+            self.last_request_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+            self.by_method[method] = self.by_method.get(method, 0) + 1
+            family = f"{status // 100}xx"
+            self.by_status[family] = self.by_status.get(family, 0) + 1
+            if len(self.by_path) < self.max_paths or bucket in self.by_path:
+                self.by_path[bucket] = self.by_path.get(bucket, 0) + 1
+            else:
+                self.overflow += 1
+            if status == 401:
+                self.unauthorized += 1
+            if status == 429:
+                self.rate_limited += 1
+            if status >= 500:
+                self.errors += 1
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            uptime = max(0.0, time.monotonic() - self.started_monotonic)
+            return {
+                "uptime_seconds": round(uptime, 3),
+                "started_at": self.started_at.isoformat(),
+                "requests": {
+                    "total": self.requests,
+                    "in_flight": self.in_flight,
+                    "errors": self.errors,
+                    "unauthorized": self.unauthorized,
+                    "rate_limited": self.rate_limited,
+                    "overflowed_paths": self.overflow,
+                    "last_status": self.last_status,
+                    "last_at": self.last_request_at,
+                    "by_method": dict(sorted(self.by_method.items())),
+                    "by_status": dict(sorted(self.by_status.items())),
+                },
+                "paths": dict(sorted(self.by_path.items(), key=lambda item: -item[1])),
+            }
+
 
 SECURITY_HEADERS = {
     "x-content-type-options": "nosniff",
@@ -84,7 +225,7 @@ class Router:
                 continue
             return handler, match.groupdict()
         if allowed:
-            raise ServiceError(f"method {method} not allowed on {path}")
+            raise MethodNotAllowed(f"method {method} not allowed on {path}")
         raise NotFound(f"no route for {method} {path}")
 
 
@@ -94,11 +235,14 @@ class ApiHandler(BaseHTTPRequestHandler):
     service: PlatformService
     settings: Settings
     warnings: list[str]
+    limiter: RateLimiter
+    metrics: ServerMetrics
 
     # ------------------------------------------------------------ plumbing
     def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
-        if os.environ.get("IDLESCAN_HTTP_LOG") == "1":
-            super().log_message(fmt, *args)
+        if self.settings.http_log or os.environ.get("IDLESCAN_HTTP_LOG") == "1":
+            request_id = getattr(self, "request_id", "-")
+            super().log_message(f"[{request_id}] " + fmt, *args)
 
     def do_GET(self) -> None:  # noqa: N802
         self._dispatch("GET")
@@ -115,15 +259,35 @@ class ApiHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         self._dispatch("DELETE")
 
+    def do_PUT(self) -> None:  # noqa: N802
+        self._dispatch("PUT")
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._dispatch("OPTIONS")
+
+    def send_response_only(self, code: int, message: str | None = None) -> None:
+        # Single choke point for metrics: every response, including static
+        # files and 304s, passes through here.
+        self._response_status = int(code)
+        super().send_response_only(code, message)
+
     def _dispatch(self, method: str) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
         self._head_only = method == "HEAD"
+        self._response_status = 0
+        self.request_id = uuid.uuid4().hex[:16]
+        metrics = getattr(self.server, "metrics", None)
+        started = time.monotonic()
+        if metrics is not None:
+            metrics.begin()
         try:
             if method in ("GET", "HEAD") and not path.startswith("/api/"):
                 self._serve_static(path, head=method == "HEAD")
                 return
+            self._rate_limit(method, path)
+            self._check_auth()
             if method in ("POST", "PATCH", "DELETE"):
                 self._check_origin()
             handler, params = self.router.match("GET" if method == "HEAD" else method, path)
@@ -133,21 +297,107 @@ class ApiHandler(BaseHTTPRequestHandler):
                 self._send_json(200, result)
         except WriteDisabled as exc:
             self._send_json(403, {"error": str(exc), "code": "read_only"})
+        except Lockdown as exc:
+            self._send_json(403, {"error": str(exc), "code": "lockdown"})
+        except Unauthorized as exc:
+            self._send_json(
+                401,
+                {"error": str(exc), "code": "unauthorized"},
+                extra_headers={"www-authenticate": 'Bearer realm="idlescan"'},
+            )
+        except TooManyRequests as exc:
+            retry = getattr(exc, "retry_after", 60)
+            self._send_json(
+                429,
+                {"error": str(exc), "code": "rate_limited", "retry_after": retry},
+                extra_headers={"retry-after": str(retry)},
+            )
+        except PayloadTooLarge as exc:
+            self._send_json(413, {"error": str(exc), "code": "payload_too_large"})
+        except UnsupportedMediaType as exc:
+            self._send_json(415, {"error": str(exc), "code": "unsupported_media_type"})
         except NotFound as exc:
             self._send_json(404, {"error": str(exc), "code": "not_found"})
         except Conflict as exc:
             self._send_json(409, {"error": str(exc), "code": "conflict"})
         except ServiceError as exc:
-            self._send_json(getattr(exc, "status", 400), {"error": str(exc)})
+            self._send_json(getattr(exc, "status", 400), {"error": redact_text(str(exc))})
         except BrokenPipeError:
             return
         except Exception as exc:  # noqa: BLE001
-            self._send_json(500, {"error": f"{exc.__class__.__name__}: {exc}"})
+            self._send_json(
+                500, {"error": redact_text(f"{exc.__class__.__name__}: {exc}")}
+            )
+        finally:
+            if metrics is not None:
+                metrics.record(
+                    method,
+                    path,
+                    self._response_status or 500,
+                    (time.monotonic() - started) * 1000.0,
+                )
+
+    # ------------------------------------------------------------ guard rails
+    def _rate_limit(self, method: str, path: str) -> None:
+        if not self.settings.rate_limit_enabled:
+            return
+        if path in ("/api/scan", "/api/check"):
+            kind, capacity, window = (
+                "scan",
+                self.settings.rate_limit_scan_per_ten_minutes,
+                600.0,
+            )
+        elif method in ("GET", "HEAD"):
+            kind, capacity, window = (
+                "read",
+                self.settings.rate_limit_read_per_minute,
+                60.0,
+            )
+        else:
+            kind, capacity, window = (
+                "write",
+                self.settings.rate_limit_write_per_minute,
+                60.0,
+            )
+        client = self.client_address[0]
+        allowed, retry = self.limiter.check((client, kind), capacity, window)
+        if not allowed:
+            error = TooManyRequests(
+                f"rate limit exceeded for {kind} requests; retry after {retry}s"
+            )
+            error.retry_after = retry
+            raise error
+
+    def _check_auth(self) -> None:
+        token = self.settings.auth_token
+        if not token:
+            return
+        header = self.headers.get("authorization") or ""
+        scheme, _, supplied = header.partition(" ")
+        if scheme.lower() != "bearer" or not supplied:
+            raise Unauthorized("a bearer token is required for /api/*")
+        if not hmac.compare_digest(supplied.strip().encode(), token.encode()):
+            raise Unauthorized("invalid bearer token")
 
     def _read_json(self) -> dict:
-        length = int(self.headers.get("content-length") or 0)
-        if length > MAX_BODY:
-            raise ServiceError("request body too large")
+        transfer = (self.headers.get("transfer-encoding") or "").lower()
+        if transfer and transfer != "identity":
+            raise ServiceError("chunked request bodies are not supported")
+        raw_length = self.headers.get("content-length")
+        try:
+            length = int(raw_length or 0)
+        except ValueError:
+            raise ServiceError("invalid Content-Length header") from None
+        if length < 0:
+            raise ServiceError("invalid Content-Length header")
+        if length > self.settings.max_body_bytes:
+            raise PayloadTooLarge(
+                f"request body {length} bytes exceeds the {self.settings.max_body_bytes}-byte limit"
+            )
+        if length and self.command in ("POST", "PATCH"):
+            content_type = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if content_type != "application/json":
+                raise UnsupportedMediaType("JSON routes require Content-Type: application/json")
         raw = self.rfile.read(length) if length else b"{}"
         if not raw:
             return {}
@@ -174,12 +424,17 @@ class ApiHandler(BaseHTTPRequestHandler):
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
 
-    def _send_json(self, status: int, payload: Any) -> None:
+    def _send_json(
+        self, status: int, payload: Any, *, extra_headers: dict[str, str] | None = None
+    ) -> None:
         body = json.dumps(payload, default=str).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
         self.send_header("content-length", str(len(body)))
         self.send_header("cache-control", "no-store")
+        self.send_header("x-request-id", getattr(self, "request_id", "-"))
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self._security_headers()
         self.end_headers()
         if getattr(self, "_head_only", False):
@@ -252,8 +507,39 @@ def _svc(handler: ApiHandler) -> PlatformService:
     return handler.service
 
 
+def _db_summary(service: PlatformService) -> dict:
+    status = service.db.status()
+    return {
+        "schema_version": status["schema_version"],
+        "latest_schema_version": status["latest_schema_version"],
+        "pending_migrations": status["pending_migrations"],
+        "up_to_date": status["up_to_date"],
+        "size_bytes": status["size_bytes"],
+    }
+
+
 def health(handler, params, query, body):
-    return {"status": "ok", "version": __version__, "read_only": handler.settings.read_only}
+    database = _db_summary(handler.service)
+    snapshot = handler.metrics.snapshot()
+    return {
+        "status": "ok" if database["up_to_date"] else "degraded",
+        "version": __version__,
+        "uptime_seconds": snapshot["uptime_seconds"],
+        "read_only": handler.settings.read_only,
+        "claim_handoff": handler.settings.claim_handoff,
+        "local_edits": handler.settings.local_edits,
+        "lockdown": handler.settings.lockdown,
+        "database": database,
+        "requests": snapshot["requests"],
+        "rpc": handler.service.rpc_health(),
+    }
+
+
+def metrics(handler, params, query, body):
+    payload = handler.metrics.snapshot()
+    payload["version"] = __version__
+    payload["database"] = _db_summary(handler.service)
+    return payload
 
 
 def config(handler, params, query, body):
@@ -262,7 +548,16 @@ def config(handler, params, query, body):
         "version": __version__,
         "read_only": settings.read_only,
         "write_enabled": settings.write_enabled,
+        "claim_handoff": settings.claim_handoff,
+        "local_edits": settings.local_edits,
+        "lockdown": settings.lockdown,
+        "auth_required": bool(settings.auth_token),
+        "rate_limit_enabled": settings.rate_limit_enabled,
+        "max_body_bytes": settings.max_body_bytes,
         "demo": settings.demo,
+        "insecure_remote": bool(settings.allow_insecure_remote and not settings.is_loopback),
+        "gas_estimate_note": GAS_ESTIMATE_NOTE,
+        "disclaimer": DISCLAIMER,
         "host": settings.host,
         "port": settings.port,
         "refresh_minutes": settings.refresh_minutes,
@@ -414,6 +709,12 @@ def job_get(handler, params, query, body):
     return {"job": _svc(handler).job(params["job_id"])}
 
 
+def job_cancel(handler, params, query, body):
+    if not _svc(handler).cancel_scan(params["job_id"]):
+        raise NotFound(f"job {params['job_id']} not found or not running")
+    return {"cancelled": True}
+
+
 def portfolio(handler, params, query, body):
     snapshot_id = _int_query(query, "snapshot")
     return _svc(handler).portfolio(snapshot_id)
@@ -445,8 +746,25 @@ def alerts_ack_all(handler, params, query, body):
     return {"acknowledged": _svc(handler).ack_all_alerts()}
 
 
+def alert_resolve(handler, params, query, body):
+    reason = str(body.get("reason") or "resolved by operator")
+    if not _svc(handler).resolve_alert(int(params["alert_id"]), reason):
+        raise NotFound("alert not found or already resolved")
+    return {"resolved": True}
+
+
+def alert_reopen(handler, params, query, body):
+    if not _svc(handler).reopen_alert(int(params["alert_id"])):
+        raise NotFound("alert not found or not resolved")
+    return {"reopened": True}
+
+
 def audit(handler, params, query, body):
-    return {"audit": _svc(handler).audit(), "executions": _svc(handler).executions()}
+    return {
+        "audit": _svc(handler).audit(),
+        "executions": _svc(handler).executions(),
+        "notifications": _svc(handler).notifications(),
+    }
 
 
 def claim_prepare(handler, params, query, body):
@@ -471,6 +789,7 @@ def export(handler, params, query, body):
 def build_router() -> Router:
     router = Router()
     router.add("GET", r"/api/health", health)
+    router.add("GET", r"/api/metrics", metrics)
     router.add("GET", r"/api/config", config)
     router.add("GET", r"/api/stats", stats)
     router.add("GET", r"/api/wallets", wallets_list)
@@ -488,6 +807,7 @@ def build_router() -> Router:
     router.add("POST", r"/api/scan", scan_start)
     router.add("GET", r"/api/jobs", jobs_list)
     router.add("GET", r"/api/jobs/(?P<job_id>[\w\-]+)", job_get)
+    router.add("POST", r"/api/jobs/(?P<job_id>[\w\-]+)/cancel", job_cancel)
     router.add("GET", r"/api/search", search)
     router.add("GET", r"/api/analytics", analytics)
     router.add("POST", r"/api/check", check_address)
@@ -497,6 +817,8 @@ def build_router() -> Router:
     router.add("GET", r"/api/snapshots/(?P<snapshot_id>\d+)", snapshot_get)
     router.add("GET", r"/api/alerts", alerts_list)
     router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/ack", alert_ack)
+    router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/resolve", alert_resolve)
+    router.add("POST", r"/api/alerts/(?P<alert_id>\d+)/reopen", alert_reopen)
     router.add("POST", r"/api/alerts/ack-all", alerts_ack_all)
     router.add("GET", r"/api/audit", audit)
     router.add("POST", r"/api/claims/(?P<drop_id>[\w.\-]+)/(?P<wallet>0x[0-9a-fA-F]{40})/prepare", claim_prepare)
@@ -514,6 +836,7 @@ def create_server(
     warnings: list[str] | None = None,
     port: int | None = None,
 ) -> ThreadingHTTPServer:
+    request_metrics = ServerMetrics()
     handler = type(
         "BoundApiHandler",
         (ApiHandler,),
@@ -522,6 +845,8 @@ def create_server(
             "service": service,
             "settings": settings,
             "warnings": warnings or [],
+            "limiter": RateLimiter(),
+            "metrics": request_metrics,
         },
     )
     bind_port = settings.port if port is None else port
@@ -531,6 +856,7 @@ def create_server(
         raise ServiceError(f"cannot bind {settings.host}:{bind_port}: {exc}") from None
     server.daemon_threads = True
     server.service = service  # type: ignore[attr-defined]
+    server.metrics = request_metrics  # type: ignore[attr-defined]
     return server
 
 
@@ -545,21 +871,34 @@ def _refresh_loop(service: PlatformService, minutes: int, stop: threading.Event)
 
 
 def run(settings: Settings, *, service: PlatformService | None = None) -> int:
+    from .log import configure_logging, get_logger
+
+    configure_logging(settings.log_level, settings.log_format)
+    logger = get_logger("idlescan.api")
     warnings = settings.validate()
     service = service or PlatformService(settings)
     if settings.demo:
         service.seed_demo()
+    else:
+        removed = service.purge_demo_data()
+        if any(removed.values()):
+            summary = ", ".join(f"{count} {name}" for name, count in removed.items() if count)
+            logger.info("removed leftover demo data: %s", summary)
     server = create_server(service, settings, warnings=warnings)
     host, port = server.server_address[0], server.server_address[1]
     url_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
 
     print(f"idlescan {__version__}  ·  http://{url_host}:{port}")
-    printer = "read-only" if settings.read_only else "WRITE MODE ENABLED"
-    print(f"mode: {printer}   db: {settings.db_path}")
+    handoff = "enabled" if settings.claim_handoff else "disabled"
+    edits = "locked" if settings.lockdown else "allowed"
+    print(f"claim hand-off: {handoff}   local edits: {edits}   db: {settings.db_path}")
+    print(f"auth: {'bearer token required' if settings.auth_token else 'none (loopback only)'}")
     if settings.env_file:
         print(f"env:  {settings.env_file}")
     for warning in warnings:
         print(f"warning: {warning}")
+    print(f"log:  {settings.log_level} {settings.log_format}")
+    logger.info("listening on http://%s:%s (read_only=%s)", url_host, port, settings.read_only)
     print("press ctrl-c to stop")
 
     stop = threading.Event()

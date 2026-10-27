@@ -93,6 +93,9 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertTrue(payload["demo"])
         self.assertEqual(payload["port"], 0)
         self.assertEqual(len(payload["chains"]), 14)
+        self.assertFalse(payload["insecure_remote"])
+        self.assertTrue(payload["gas_estimate_note"].startswith("Gas is estimated"))
+        self.assertIn("not financial advice", payload["disclaimer"])
 
     def test_stats(self):
         status, payload = self.json("/api/stats")
@@ -112,6 +115,10 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertEqual(status, 200)
         self.assertIn("javascript", headers["content-type"])
         self.assertIn(b"prepareClaim", payload)
+        # Banners and toasts must keep a manual dismiss control.
+        self.assertIn(b"toast-x", payload)
+        self.assertIn(b"data-dismiss", payload)
+        self.assertIn(b"saveDismissed", payload)
 
         status, payload, headers = self.http("/app.css")
         self.assertEqual(status, 200)

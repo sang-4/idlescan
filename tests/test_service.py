@@ -55,7 +55,7 @@ class DemoSeedTests(ServiceTestCase):
 
         unclaimed = next(row for row in portfolio["claims"] if row["status"] == "unclaimed")
         self.assertTrue(unclaimed["calldata"])
-        self.assertAlmostEqual(unclaimed["net_usd"], 607.007376, places=3)
+        self.assertAlmostEqual(unclaimed["net_usd"], 606.508114, places=3)
         self.assertEqual(unclaimed["wallet_label"], "Demo cold wallet")
 
     def test_demo_is_idempotent(self):
@@ -78,7 +78,7 @@ class DemoSeedTests(ServiceTestCase):
         self.assertEqual(demo["risk"]["label"], "high")
         self.assertGreaterEqual(demo["risk"]["score"], 70)
         self.assertEqual(demo["unclaimed"], 1)
-        self.assertAlmostEqual(demo["claimable_net_usd"], 607.007376, places=3)
+        self.assertAlmostEqual(demo["claimable_net_usd"], 606.508114, places=3)
         self.assertFalse(demo["has_dataset"])  # demo claims come from the mock chain
         uniswap = drops["uniswap-uni"]
         self.assertTrue(uniswap["has_dataset"])  # dataset configured, file still missing
@@ -135,7 +135,7 @@ class DemoSeedTests(ServiceTestCase):
         wallet = self.service.wallet_detail(WALLET_UNCLAIMED)
         self.assertEqual(wallet["wallet"]["address"], WALLET_UNCLAIMED)
         self.assertEqual(wallet["totals"]["unclaimed"], 1)
-        self.assertAlmostEqual(wallet["totals"]["net_usd"], 607.007376, places=3)
+        self.assertAlmostEqual(wallet["totals"]["net_usd"], 606.508114, places=3)
         with self.assertRaises(NotFound):
             self.service.wallet_detail("0x" + "99" * 20)
         with self.assertRaises(ServiceError):
@@ -202,7 +202,7 @@ class DemoSeedTests(ServiceTestCase):
         result = self.service.check_address(WALLET_UNCLAIMED)
         self.assertEqual(result["address"], WALLET_UNCLAIMED)
         self.assertEqual(result["totals"]["unclaimed"], 1)
-        self.assertAlmostEqual(result["totals"]["net_usd"], 607.007376, places=3)
+        self.assertAlmostEqual(result["totals"]["net_usd"], 606.508114, places=3)
         self.assertEqual(result["totals"]["positions"], 1)
         self.assertTrue(result["tracked"])
         self.assertEqual(len(result["claims"]), 1)

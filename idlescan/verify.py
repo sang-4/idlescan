@@ -193,6 +193,9 @@ def verify_drops(
 def detect_proof_mode(dataset, root: bytes, limit: int = 5) -> tuple[str, bool] | None:
     samples = [(addr, claim) for addr, claim in dataset.claims.items() if claim.proof][:limit]
     if not samples:
+        # A one-leaf tree has an empty proof and is still verifiable.
+        samples = list(dataset.claims.items())[:limit]
+    if not samples:
         return None
     for encoding, double in (("packed", False), ("abi", False), ("packed", True), ("abi", True)):
         if all(
