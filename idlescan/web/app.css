@@ -112,6 +112,7 @@ code, kbd, .mono { font-family: var(--mono); }
 .banner-warn { border-color: rgba(251, 191, 36, .32); background: rgba(251, 191, 36, .06); color: #fde68a; }
 .banner-write { border-color: rgba(251, 191, 36, .4); background: rgba(251, 191, 36, .07); color: #fcd34d; }
 .banner-demo { border-color: rgba(196, 181, 253, .3); background: rgba(196, 181, 253, .05); color: #ddd6fe; }
+.banner-danger { border-color: rgba(248, 113, 113, .45); background: rgba(248, 113, 113, .09); color: #fecaca; }
 .banner-read { border-color: rgba(94, 234, 212, .22); background: rgba(94, 234, 212, .04); color: #a7f3d0; }
 .banner-x { margin-left: auto; background: none; border: 0; color: inherit; opacity: .7; cursor: pointer; padding: 0 2px; }
 

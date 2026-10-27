@@ -83,6 +83,12 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--chains-file", type=Path)
     doctor.add_argument("--tokens-file", type=Path)
 
+    about = sub.add_parser("about", help="safe diagnostics for support emails (no secrets, no network)")
+    about.add_argument("--json", action="store_true")
+    about.add_argument("--env-file", type=Path)
+    about.add_argument("--db", type=Path)
+    about.add_argument("--chains-file", type=Path)
+
     dataset = sub.add_parser("dataset", help="validate a merkle claims file against a distributor contract")
     dataset.add_argument("path", type=Path, help="claims JSON to validate")
     dataset.add_argument("--distributor", required=True, help="distributor contract address")
@@ -1194,6 +1200,21 @@ def cmd_db(args: argparse.Namespace) -> int:
     raise SystemExit(f"unknown db command {args.db_command!r}")
 
 
+def cmd_about(args: argparse.Namespace) -> int:
+    from .about import collect, render_text
+
+    settings = _settings(args)
+    override = getattr(args, "db", None)
+    if override:
+        settings = settings.with_overrides(db_path=override)
+    payload = collect(settings, chains_file=getattr(args, "chains_file", None))
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(render_text(payload))
+    return 0
+
+
 def cmd_backup(args: argparse.Namespace) -> int:
     _, service = _service(args)
     try:
@@ -1217,6 +1238,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "selftest": cmd_selftest,
         "dataset": cmd_dataset,
         "doctor": cmd_doctor,
+        "about": cmd_about,
         "chains": cmd_chains,
         "tokens": cmd_tokens,
         "serve": cmd_serve,

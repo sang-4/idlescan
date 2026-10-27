@@ -1,7 +1,8 @@
 """Merkle maths, cross-checked against Uniswap's own reference fixture.
 
 ``tests/fixtures/uniswap_complex_example.json`` is ``scripts/complex_example.json``
-from github.com/Uniswap/merkle-distributor (MIT).  The expected root below was
+from github.com/Uniswap/merkle-distributor (GPL-3.0, test-only; see
+THIRD_PARTY.md).  The expected root below was
 produced by ethers v5 with the same algorithm their TypeScript generator uses
 (``solidityPack`` leaves, sorted pair hashing, odd node promoted).  If our Python
 implementation ever drifts, this test fails.

@@ -32,7 +32,9 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__
 from .config import Settings
+from .gas import GAS_ESTIMATE_NOTE
 from .redaction import redact_text
+from .report import DISCLAIMER
 from .service import (
     Conflict,
     Lockdown,
@@ -553,6 +555,9 @@ def config(handler, params, query, body):
         "rate_limit_enabled": settings.rate_limit_enabled,
         "max_body_bytes": settings.max_body_bytes,
         "demo": settings.demo,
+        "insecure_remote": bool(settings.allow_insecure_remote and not settings.is_loopback),
+        "gas_estimate_note": GAS_ESTIMATE_NOTE,
+        "disclaimer": DISCLAIMER,
         "host": settings.host,
         "port": settings.port,
         "refresh_minutes": settings.refresh_minutes,

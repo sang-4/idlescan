@@ -8,14 +8,24 @@ version = "1.2.0"
 description = "Self-hosted airdrop research desk: idle balances, unclaimed allocations and gas-adjusted claim planning (read-only by default)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
-authors = [{ name = "idlescan" }]
+license = { text = "Proprietary" }
+authors = [{ name = "Allan Kiprop", email = "support@allank.dev" }]
+maintainers = [{ name = "Allan Kiprop", email = "support@allank.dev" }]
 keywords = ["ethereum", "airdrop", "portfolio", "merkle", "read-only", "self-hosted"]
 classifiers = [
+  "License :: Other/Proprietary License",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Office/Business :: Financial",
   "Environment :: Console",
 ]
+
+[project.urls]
+Homepage = "https://allank.dev"
+Support = "mailto:support@allank.dev"
 
 [project.scripts]
 idlescan = "idlescan.cli:main"

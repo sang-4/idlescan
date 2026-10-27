@@ -70,5 +70,7 @@ Doc-sync tests verify that API routes and environment variables are documented.
 
 ## License
 
-MIT. The GPL-3.0 Uniswap fixture in `tests/fixtures/` is test-only and excluded
-from the built distribution.
+Proprietary single-user license, copyright 2026 Allan Kiprop. See `LICENSE`.
+Contributions are accepted only under a signed contributor agreement; open an
+issue first. The GPL-3.0 Uniswap fixture in `tests/fixtures/` is test-only and
+excluded from the built distribution -- see `THIRD_PARTY.md`.

@@ -38,6 +38,12 @@ SCROLL_GAS_ORACLE = "0x5300000000000000000000000000000000000002"
 
 GAS_LIMIT_HEADROOM_PCT = 25
 
+GAS_ESTIMATE_NOTE = (
+    "Gas is estimated from eth_estimateGas and the current gas price. "
+    "It may exclude layer-2 data fees and will differ from the final cost."
+)
+
+
 
 @dataclass(frozen=True)
 class FeeQuote:

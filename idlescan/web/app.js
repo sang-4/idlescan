@@ -565,6 +565,12 @@
     const config = state.config;
     const items = [];
 
+    if (config.insecure_remote) {
+      items.push({
+        kind: "insecure-remote", cls: "banner-danger", icon: "!",
+        text: `<strong>Insecure remote bind.</strong> The server is listening on <code>${esc(config.host)}</code> without an auth token. Anyone who can reach this address can read your database and use the API. Bind to 127.0.0.1 or set <code>IDLESCAN_AUTH_TOKEN</code>.`,
+      });
+    }
     if (config.demo && !state.dismissed.has("demo")) {
       items.push({
         kind: "demo", cls: "banner-demo", icon: "◈",
@@ -605,7 +611,7 @@
       <div class="banner ${item.cls}" data-banner="${esc(item.kind)}">
         <span aria-hidden="true">${item.icon}</span>
         <span class="grow">${item.text}</span>
-        <button class="banner-x" type="button" data-dismiss="${esc(item.kind)}" aria-label="Dismiss">×</button>
+        ${item.kind === "insecure-remote" ? "" : `<button class="banner-x" type="button" data-dismiss="${esc(item.kind)}" aria-label="Dismiss">×</button>`}
       </div>`).join("");
     $$("[data-dismiss]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -1586,6 +1592,7 @@
           <span class="panel-note" id="claim-count"></span>
         </div>
         <div class="panel-body flush" id="claims-table"></div>
+        <div class="panel-body"><p class="small dim" id="gas-note">${esc(state.config.gas_estimate_note || "")}</p></div>
       </section>
 
       <div class="grid grid-2-even mt">
@@ -2505,13 +2512,15 @@
       <div class="page-head">
         <div>
           <h1>Settings</h1>
-          <p class="page-sub">One switch controls the only state-changing feature in the product. Everything else is read-only by construction.</p>
+          <p class="page-sub">One switch controls on-chain claim hand-off. Local administrative writes (wallets, airdrops, scans, alerts, backups) work in either mode; the server still never holds keys, signs, or broadcasts.</p>
         </div>
         <div class="page-actions">
           <span class="badge ${config.read_only ? "badge-info" : "badge-warning"}">${config.read_only ? "read-only" : "write mode"}</span>
           <span class="badge badge-source">v${esc(config.version)}</span>
         </div>
       </div>
+
+      <p class="small dim" id="disclaimer">${esc(config.disclaimer || "Research tool, not financial advice. Verify contract addresses against official sources.")}</p>
 
       <div class="grid grid-2">
         <section class="panel">

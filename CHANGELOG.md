@@ -1,6 +1,6 @@
 # idlescan Changelog
 
-## [1.2.0] — 2026-10-26
+## [1.2.0] — 2026-10-27
 
 ### Added
 
@@ -48,8 +48,19 @@
   cancellation (`POST /api/jobs/{id}/cancel`), scan timeout (`IDLESCAN_SCAN_TIMEOUT_SECONDS`),
   phase timings, startup recovery for stale jobs, single-flight scan lock.
 
+- **`idlescan about [--json]`**: safe, paste-able diagnostics for support (version, Python, OS,
+  schema, chain counts, mode flags, database filename, dataset-directory presence, licence name).
+  Never prints RPC URLs, tokens, environment values or wallet addresses.
+- **Report-level gas note and disclaimer**: `gas_estimate_note` on JSON exports and a single
+  trailer row in CSV; a `GAS ESTIMATE` footer in the terminal report; a footnote in the Claims
+  view; and the research-tool disclaimer in the CLI footer, Markdown export, Settings view and
+  README.
+
 ### Changed
 
+- **Licence**: MIT replaced by a proprietary single-user licence held by Allan Kiprop. Added
+  `NOTICE` and `THIRD_PARTY.md`; package metadata and classifiers updated. The GPL-3.0 Uniswap
+  fixture remains test-only and is excluded from distributed artefacts.
 - `idlescan doctor` exits 1 when there are warnings (not just failures).
 - `keccak.py` docstring test file reference corrected (`test_keccak_abi.py`).
 - `ScanReport` gains `phase_timings` and `datasets` fields.

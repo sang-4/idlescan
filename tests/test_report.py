@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from idlescan.report import export, render_console, render_markdown, to_dict
+from idlescan.gas import GAS_ESTIMATE_NOTE
+from idlescan.report import DISCLAIMER, export, render_console, render_markdown, to_dict
 from idlescan.scanner import CLAIMED
 from idlescan.selftest import run_selftest
 
@@ -47,7 +48,8 @@ class ReportTests(unittest.TestCase):
 
             rows = list(csv.reader((Path(tmp) / "report.csv").read_text().splitlines()))
             self.assertEqual(rows[0][0], "kind")
-            self.assertEqual(len(rows) - 1, len(self.report.holdings) + len(self.report.claims))
+            # Every holding + claim, plus one report-level metadata row.
+            self.assertEqual(len(rows) - 1, len(self.report.holdings) + len(self.report.claims) + 1)
 
             markdown = (Path(tmp) / "report.md").read_text()
             self.assertIn("# Idle asset & unclaimed airdrop report", markdown)
@@ -59,6 +61,28 @@ class ReportTests(unittest.TestCase):
             written = export(self.report, target, ["md"])
             self.assertEqual(written[0], target)
             self.assertTrue(target.exists())
+
+    def test_gas_estimate_note_is_report_level_in_json(self):
+        payload = to_dict(self.report)
+        self.assertEqual(payload["gas_estimate_note"], GAS_ESTIMATE_NOTE)
+        for claim in payload["claims"]:
+            self.assertNotIn("gas_estimate_note", claim)
+
+    def test_gas_estimate_note_in_console_markdown_and_csv(self):
+        self.assertIn(GAS_ESTIMATE_NOTE, render_console(self.report))
+        self.assertIn(GAS_ESTIMATE_NOTE, render_markdown(self.report))
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "report.csv"
+            export(self.report, target, ["csv"])
+            rows = list(csv.reader(target.read_text().splitlines()))
+        trailers = [row for row in rows if row and row[0] == "note"]
+        self.assertEqual(len(trailers), 1)
+        self.assertEqual(trailers[0][3], "gas_estimate_note")
+        self.assertEqual(trailers[0][12], GAS_ESTIMATE_NOTE)
+
+    def test_disclaimer_in_console_and_markdown(self):
+        self.assertIn(DISCLAIMER, render_console(self.report))
+        self.assertIn(DISCLAIMER, render_markdown(self.report))
 
     def test_markdown_shows_proof_state(self):
         markdown = render_markdown(self.report)

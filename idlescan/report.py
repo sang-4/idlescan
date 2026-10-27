@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .gas import GAS_ESTIMATE_NOTE
 from .scanner import (
     CLAIMED,
     ERROR,
@@ -18,6 +19,11 @@ from .scanner import (
     UNKNOWN,
     ClaimCheck,
     ScanReport,
+)
+
+DISCLAIMER = (
+    "Research tool, not financial advice. Verify contract addresses against "
+    "official sources."
 )
 
 STATUS_ORDER = {UNCLAIMED: 0, CLAIMED: 1, UNKNOWN: 2, ERROR: 3, NO_SOURCE: 4, NO_ALLOCATION: 5}
@@ -149,6 +155,8 @@ def render_console(report: ScanReport, *, show_empty: bool = False, show_claimed
         f"  unclaimed       {fmt_usd(report.claim_value)}\n"
         f"  combined        {fmt_usd(report.total_value)}"
     )
+    blocks.append("GAS ESTIMATE\n  " + GAS_ESTIMATE_NOTE)
+    blocks.append("DISCLAIMER\n  " + DISCLAIMER)
     return "\n\n".join(blocks)
 
 
@@ -230,6 +238,7 @@ def to_dict(report: ScanReport) -> dict:
             }
             for c in report.claims
         ],
+        "gas_estimate_note": GAS_ESTIMATE_NOTE,
         "warnings": report.warnings,
         "price_error": report.price_error,
         "datasets": report.datasets,
@@ -294,6 +303,11 @@ def write_csv(report: ScanReport, path: Path) -> None:
                 claim.net_usd_raw if claim.net_usd_raw is not None else "",
             ]
         )
+    # Report-level metadata is emitted as one trailer row with kind="note"
+    # so the header stays first and row-oriented consumers keep working.
+    writer.writerow(
+        ["note", "", "", "gas_estimate_note", "", "", "", "", "", "", "", "", GAS_ESTIMATE_NOTE, "", "", "", "", "", "", ""]
+    )
     path.write_text(buffer.getvalue())
 
 
@@ -354,6 +368,8 @@ def render_markdown(report: ScanReport, *, show_empty: bool = False) -> str:
             lines.append(f"- warning: {warning}")
     if report.price_error:
         lines += ["", f"> Prices unavailable: {report.price_error}"]
+    lines += ["", f"> **Gas estimate:** {GAS_ESTIMATE_NOTE}"]
+    lines += ["", DISCLAIMER]
     return "\n".join(lines) + "\n"
 
 

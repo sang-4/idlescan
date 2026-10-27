@@ -93,6 +93,9 @@ class ReadOnlyApiTests(ApiTestCase):
         self.assertTrue(payload["demo"])
         self.assertEqual(payload["port"], 0)
         self.assertEqual(len(payload["chains"]), 14)
+        self.assertFalse(payload["insecure_remote"])
+        self.assertTrue(payload["gas_estimate_note"].startswith("Gas is estimated"))
+        self.assertIn("not financial advice", payload["disclaimer"])
 
     def test_stats(self):
         status, payload = self.json("/api/stats")

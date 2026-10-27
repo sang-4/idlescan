@@ -1,7 +1,9 @@
 """Settings / .env contract, including the read-only default and remote-write refusal."""
 
+import io
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
@@ -127,6 +129,26 @@ class SettingsTests(unittest.TestCase):
     def test_remote_with_token_is_allowed(self):
         settings = Settings(read_only=True, host="0.0.0.0", auth_token="s3cret")
         self.assertEqual(settings.validate(), [])
+
+    def test_loopback_bind_is_allowed_without_any_opt_in(self):
+        for host in ("127.0.0.1", "localhost", "::1"):
+            settings = Settings(host=host)
+            self.assertEqual(settings.validate(), [], host)
+
+    def test_non_loopback_refused_with_exit_code_2(self):
+        from idlescan.cli import main
+
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            code = main(["serve", "--host", "0.0.0.0", "--port", "0"])
+        self.assertEqual(code, 2)
+        self.assertIn("non-loopback", stderr.getvalue())
+        self.assertIn("IDLESCAN_ALLOW_INSECURE_REMOTE", stderr.getvalue())
+
+    def test_non_loopback_override_is_accepted_with_warning(self):
+        settings = Settings(host="0.0.0.0", allow_insecure_remote=True)
+        warnings = settings.validate()
+        self.assertTrue(any("INSECURE REMOTE" in item for item in warnings))
 
     def test_invalid_values_are_reported(self):
         with self.assertRaises(SettingsError):
