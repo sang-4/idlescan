@@ -23,18 +23,14 @@ SUPPORT_EMAIL = "support@allank.dev"
 PRIVATE_KEY = re.compile(r"(?<!0x)\b[0-9a-fA-F]{64}\b")
 EMAIL = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 HOME_PATH = re.compile(r"(?i)(/home/|/Users/|[A-Z]:\\Users\\|[A-Z]:/Users/)")
-KEYED_URL = re.compile(
-    r"(?i)https?://[^\s\"'<>]*(?:api[_-]?key|apikey|access[_-]?token|secret)=[^\s\"'<>]+"
-)
+KEYED_URL = re.compile(r"(?i)https?://[^\s\"'<>]*(?:api[_-]?key|apikey|access[_-]?token|secret)=[^\s\"'<>]+")
 # Only quoted literals: `token = self.settings.auth_token` is code, not a value.
 QUOTED_ASSIGNMENT = re.compile(
     r"(?i)\b(api[_-]?key|apikey|secret|password|passwd|access[_-]?token|auth[_-]?token)\b"
     r"\s*[:=]\s*[\"']([^\"']{8,})[\"']"
 )
 # dotenv-style credential lines, e.g. IDLESCAN_AUTH_TOKEN=abc123
-ENV_SECRET = re.compile(
-    r"(?m)^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD))\s*=\s*(\S+)"
-)
+ENV_SECRET = re.compile(r"(?m)^\s*(?:export\s+)?([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD))\s*=\s*(\S+)")
 PLACEHOLDER_VALUES = {
     "change-me",
     "changeme",
@@ -74,7 +70,7 @@ def _scan_text(name: str, text: str, findings: list[str]) -> None:
         break
     for pattern in (QUOTED_ASSIGNMENT, ENV_SECRET):
         for match in pattern.finditer(text):
-            value = match.group(2).strip().strip('"\'').lower()
+            value = match.group(2).strip().strip("\"'").lower()
             if value in PLACEHOLDER_VALUES or value.startswith("<") or "{{" in value:
                 continue
             if value in {"data/idlescan.db", "true", "false", "null", "none", "0"}:

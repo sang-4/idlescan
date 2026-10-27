@@ -32,9 +32,7 @@ TOKEN = "0x" + "aa" * 20
 
 
 def build_dataset(claims):
-    root = compute_root(
-        [leaf_hash(index, account, amount) for index, (account, amount) in enumerate(claims)]
-    )
+    root = compute_root([leaf_hash(index, account, amount) for index, (account, amount) in enumerate(claims)])
     entries = []
     for index, (account, amount) in enumerate(claims):
         proof = build_proof(
@@ -43,14 +41,12 @@ def build_dataset(claims):
             amount,
             [(item, amt) for item, amt in claims],
         )
-        entries.append(
-            {
-                "account": account,
-                "index": index,
-                "amount": str(amount),
-                "proof": ["0x" + item.hex() for item in proof],
-            }
-        )
+        entries.append({
+            "account": account,
+            "index": index,
+            "amount": str(amount),
+            "proof": ["0x" + item.hex() for item in proof],
+        })
     return root, entries
 
 
@@ -165,9 +161,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_provenance_hashes_size_and_file_date(self):
         root, _ = build_dataset([(WALLET_A, 10**18)])
-        provenance = dataset_provenance(
-            self.path, drop_id="drop", root=root, entry_count=1, tool_version="1.2.0"
-        )
+        provenance = dataset_provenance(self.path, drop_id="drop", root=root, entry_count=1, tool_version="1.2.0")
         self.assertEqual(provenance.filename, "distribution.json")
         self.assertEqual(provenance.sha256, hashlib.sha256(self.path.read_bytes()).hexdigest())
         self.assertEqual(provenance.byte_size, self.path.stat().st_size)

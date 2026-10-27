@@ -39,17 +39,13 @@ class DemoPurgeTests(unittest.TestCase):
         seeded = self._seeded_service()
         seeded.add_wallet(REAL_WALLET, "real wallet", "mine")
 
-        counts = PlatformService(
-            Settings(db_path=self.db_path, demo=False)
-        ).purge_demo_data()
+        counts = PlatformService(Settings(db_path=self.db_path, demo=False)).purge_demo_data()
 
         self.assertEqual(counts["wallets"], 3)
         self.assertEqual(counts["airdrops"], 1)
         self.assertGreaterEqual(counts["snapshots"], 1)
 
-        self.assertEqual(
-            [wallet["address"] for wallet in seeded.list_wallets()], [REAL_WALLET]
-        )
+        self.assertEqual([wallet["address"] for wallet in seeded.list_wallets()], [REAL_WALLET])
         self.assertEqual([drop["id"] for drop in seeded.airdrops()], ["uniswap-uni"])
         self.assertEqual(seeded.db.list_snapshots(), [])
 
@@ -83,9 +79,7 @@ class DemoServeTests(unittest.TestCase):
         self.env.write_text(f"IDLESCAN_DB={self.root / 'real.db'}\nIDLESCAN_DEMO=false\n")
 
     def _run_serve(self, *extra: str):
-        with patch("idlescan.api.run", return_value=0) as run, patch(
-            "idlescan.log.configure_logging"
-        ):
+        with patch("idlescan.api.run", return_value=0) as run, patch("idlescan.log.configure_logging"):
             code = main(["serve", "--env-file", str(self.env), "--port", "0", *extra])
         return code, run
 

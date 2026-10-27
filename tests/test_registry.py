@@ -47,9 +47,7 @@ class RegistryTests(unittest.TestCase):
 
     def test_allocation_view_defaults_to_claimed_address(self):
         drops = parse_registry(
-            registry_with(
-                eligibility={"type": "allocation_view", "method": "allocation(address)", "decimals": 6}
-            ),
+            registry_with(eligibility={"type": "allocation_view", "method": "allocation(address)", "decimals": 6}),
             CHAIN_CONFIG,
         )
         self.assertEqual(drops[0].claimed_method, "claimed(address)")

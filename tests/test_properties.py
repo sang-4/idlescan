@@ -142,10 +142,7 @@ class AbiRoundTripTests(unittest.TestCase):
         rng = random.Random(13)
         for _ in range(20):
             count = rng.randint(1, 8)
-            values = [
-                "0x" + "".join(f"{rng.randint(0, 255):02x}" for _ in range(32))
-                for _ in range(count)
-            ]
+            values = ["0x" + "".join(f"{rng.randint(0, 255):02x}" for _ in range(32)) for _ in range(count)]
             encoded = encode(["bytes32[]"], [values])
             # Offset points to array data section (starts with length)
             offset = int.from_bytes(encoded[:32], "big")
@@ -160,7 +157,11 @@ class AbiRoundTripTests(unittest.TestCase):
             encode(["float"], [1.0])  # unsupported type
 
     def test_calldata_produces_selector(self):
-        data = calldata("claim(uint256,address,uint256,bytes32[])", ["uint256", "address", "uint256", "bytes32[]"], [0, "0x" + "11" * 20, 100, []])
+        data = calldata(
+            "claim(uint256,address,uint256,bytes32[])",
+            ["uint256", "address", "uint256", "bytes32[]"],
+            [0, "0x" + "11" * 20, 100, []],
+        )
         # First 4 bytes are the function selector
         self.assertEqual(len(data) >= 4, True)
 
@@ -190,12 +191,23 @@ class MerkleRoundTripTests(unittest.TestCase):
                     root = compute_root(leaves, sort_pairs=True)
                     for i, (addr, amt) in enumerate(claims):
                         proof = build_proof(
-                            i, addr, amt, claims,
-                            encoding=encoding, double_hash=double, sort_pairs=True,
+                            i,
+                            addr,
+                            amt,
+                            claims,
+                            encoding=encoding,
+                            double_hash=double,
+                            sort_pairs=True,
                         )
                         ok = verify_proof(
-                            i, addr, amt, proof, root,
-                            encoding=encoding, double_hash=double, sort_pairs=True,
+                            i,
+                            addr,
+                            amt,
+                            proof,
+                            root,
+                            encoding=encoding,
+                            double_hash=double,
+                            sort_pairs=True,
                         )
                         self.assertTrue(
                             ok,
@@ -208,9 +220,7 @@ class MerkleRoundTripTests(unittest.TestCase):
     def test_tamper_and_fail(self):
         rng = random.Random(19)
         claims = self.build_claims(8, rng)
-        leaves = [
-            leaf_hash(i, addr, amt) for i, (addr, amt) in enumerate(claims)
-        ]
+        leaves = [leaf_hash(i, addr, amt) for i, (addr, amt) in enumerate(claims)]
         root = compute_root(leaves)
         for i, (addr, amt) in enumerate(claims):
             proof = build_proof(i, addr, amt, claims)

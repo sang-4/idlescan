@@ -145,21 +145,15 @@ def build_parser() -> argparse.ArgumentParser:
     token_rm.add_argument("--env-file", type=Path)
     token_rm.add_argument("--db", type=Path)
 
-    registry = sub.add_parser(
-        "registry", help="validate, import and export the airdrops registry"
-    )
+    registry = sub.add_parser("registry", help="validate, import and export the airdrops registry")
     registry_sub = registry.add_subparsers(dest="registry_command", required=True)
-    registry_import = registry_sub.add_parser(
-        "import", help="validate a registry file against the schema and chains"
-    )
+    registry_import = registry_sub.add_parser("import", help="validate a registry file against the schema and chains")
     registry_import.add_argument("source", help="registry JSON file path or https URL")
     registry_import.add_argument("--chains-file", type=Path)
     registry_import.add_argument("--schema", type=Path, help="JSON schema file (default: bundled)")
     registry_import.add_argument("--json", action="store_true")
     registry_import.add_argument("--env-file", type=Path)
-    registry_export = registry_sub.add_parser(
-        "export", help="export the bundled registry to a file"
-    )
+    registry_export = registry_sub.add_parser("export", help="export the bundled registry to a file")
     registry_export.add_argument("out", type=Path, help="output file path")
     registry_export.add_argument("--registry", type=Path, help="registry JSON to export (default: bundled)")
     registry_export.add_argument("--json", action="store_true")
@@ -595,15 +589,13 @@ def cmd_tokens(args: argparse.Namespace) -> int:
                 ]
                 for ct in custom:
                     if ct["chain"] == key:
-                        chain_tokens.append(
-                            {
-                                "symbol": ct["symbol"],
-                                "address": ct["address"],
-                                "decimals": ct["decimals"],
-                                "custom": True,
-                                "source": ct["source"],
-                            }
-                        )
+                        chain_tokens.append({
+                            "symbol": ct["symbol"],
+                            "address": ct["address"],
+                            "decimals": ct["decimals"],
+                            "custom": True,
+                            "source": ct["source"],
+                        })
                 payload[key] = chain_tokens
             print(json.dumps(payload, indent=2))
             return 0
@@ -619,9 +611,7 @@ def cmd_tokens(args: argparse.Namespace) -> int:
     if command == "add":
         settings, service = _service(args)
         try:
-            result = service.add_custom_token(
-                args.chain, args.address, args.symbol, args.decimals, source=args.source
-            )
+            result = service.add_custom_token(args.chain, args.address, args.symbol, args.decimals, source=args.source)
         except (ServiceError, ConfigError, Conflict) as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
@@ -1058,12 +1048,17 @@ def cmd_registry(args: argparse.Namespace) -> int:
         total = len(data.get("airdrops") or [])
         rejected = total - accepted
         if args.json:
-            print(json.dumps({
-                "source": source,
-                "accepted": accepted,
-                "rejected": rejected,
-                "drops": [{"id": d.id, "chain": d.chain, "distributor": d.distributor} for d in drops],
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "source": source,
+                        "accepted": accepted,
+                        "rejected": rejected,
+                        "drops": [{"id": d.id, "chain": d.chain, "distributor": d.distributor} for d in drops],
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(f"registry import: {accepted} accepted, {rejected} rejected")
             for d in drops:

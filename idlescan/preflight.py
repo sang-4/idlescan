@@ -144,9 +144,7 @@ def _is_claimed(rpc: Rpc, drop: Airdrop, call: dict[str, Any]) -> bool:
             raw = "0x" + data.hex() + bytes.fromhex(call["account"][2:].rjust(64, "0")).hex()
         result = _call(rpc, drop.distributor, raw)
     except (RpcError, ValueError) as exc:
-        raise PreflightUnavailable(
-            f"could not re-read claim state ({describe_error(exc)})"
-        ) from exc
+        raise PreflightUnavailable(f"could not re-read claim state ({describe_error(exc)})") from exc
     if len(result) >= 66:
         return int(result[2:66], 16) != 0
     raise PreflightUnavailable("claim-state call returned an unexpected value")
@@ -166,17 +164,14 @@ def run_preflight(
     call = decode_claim_call(drop, data)
 
     if call["account"] != wallet:
-        raise PreflightError(
-            f"calldata account {call['account']} does not match wallet {wallet}", status=400
-        )
+        raise PreflightError(f"calldata account {call['account']} does not match wallet {wallet}", status=400)
     try:
         expected_amount = int(str(row.get("amount_raw") or "0"))
     except ValueError:
         raise PreflightError("snapshot amount is not an integer", status=409) from None
     if call["amount"] != expected_amount:
         raise PreflightError(
-            f"calldata amount {call['amount']} does not match verified position "
-            f"{expected_amount}",
+            f"calldata amount {call['amount']} does not match verified position {expected_amount}",
             status=400,
         )
     if drop.claim_payable and not drop.allow_payable:
@@ -192,8 +187,7 @@ def run_preflight(
         raise PreflightUnavailable(f"could not read distributor code ({describe_error(exc)})") from exc
     if not code or code == "0x":
         raise PreflightError(
-            f"no contract code at {drop.distributor} on {drop.chain}; the registry entry "
-            "may be stale or wrong",
+            f"no contract code at {drop.distributor} on {drop.chain}; the registry entry may be stale or wrong",
             status=409,
         )
 
@@ -202,9 +196,7 @@ def run_preflight(
         try:
             raw_root = _call(rpc, drop.distributor, "0x" + selector(drop.root_method).hex())
         except RpcError as exc:
-            raise PreflightUnavailable(
-                f"could not re-read {drop.root_method} ({describe_error(exc)})"
-            ) from exc
+            raise PreflightUnavailable(f"could not re-read {drop.root_method} ({describe_error(exc)})") from exc
         if raw_root and raw_root != "0x":
             root_now = _root(raw_root[:66])
         snapshot_root = _root(row.get("root"))
@@ -225,12 +217,8 @@ def run_preflight(
         _call(rpc, drop.distributor, data, from_address=wallet)
     except RpcError as exc:
         if isinstance(exc, Revert) or "revert" in str(exc).lower():
-            raise PreflightError(
-                f"claim simulation failed: {_revert_message(exc)}", status=409
-            ) from exc
-        raise PreflightUnavailable(
-            f"claim simulation could not run ({describe_error(exc)})"
-        ) from exc
+            raise PreflightError(f"claim simulation failed: {_revert_message(exc)}", status=409) from exc
+        raise PreflightUnavailable(f"claim simulation could not run ({describe_error(exc)})") from exc
 
     try:
         block = rpc.block_number()

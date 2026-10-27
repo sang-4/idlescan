@@ -87,10 +87,14 @@ class CliTests(unittest.TestCase):
             path = Path(tmp) / "claims.json"
             path.write_text(_json.dumps(payload))
             code, out, _ = run_cli(
-                "dataset", str(path),
-                "--root", payload["merkleRoot"],
-                "--chain", "ethereum",
-                "--distributor", "0x090D4613473dEE047c3f2706764f49E0821D256e",
+                "dataset",
+                str(path),
+                "--root",
+                payload["merkleRoot"],
+                "--chain",
+                "ethereum",
+                "--distributor",
+                "0x090D4613473dEE047c3f2706764f49E0821D256e",
             )
             self.assertEqual(code, 0)
             self.assertIn("proofs verified", out)
@@ -101,20 +105,28 @@ class CliTests(unittest.TestCase):
             broken["claims"][first]["proof"][0] = "0x" + "00" * 32
             path.write_text(_json.dumps(broken))
             code, out, _ = run_cli(
-                "dataset", str(path),
-                "--root", payload["merkleRoot"],
-                "--chain", "ethereum",
-                "--distributor", "0x090D4613473dEE047c3f2706764f49E0821D256e",
+                "dataset",
+                str(path),
+                "--root",
+                payload["merkleRoot"],
+                "--chain",
+                "ethereum",
+                "--distributor",
+                "0x090D4613473dEE047c3f2706764f49E0821D256e",
             )
             self.assertEqual(code, 1)
             self.assertIn("FAIL", out)
 
     def test_dataset_command_missing_file(self):
         code, _, err = run_cli(
-            "dataset", "/nonexistent/claims.json",
-            "--root", "0x" + "11" * 32,
-            "--chain", "ethereum",
-            "--distributor", "0x090D4613473dEE047c3f2706764f49E0821D256e",
+            "dataset",
+            "/nonexistent/claims.json",
+            "--root",
+            "0x" + "11" * 32,
+            "--chain",
+            "ethereum",
+            "--distributor",
+            "0x090D4613473dEE047c3f2706764f49E0821D256e",
         )
         self.assertEqual(code, 2)
         self.assertIn("cannot read", err)
@@ -179,8 +191,12 @@ class PlatformCliTests(unittest.TestCase):
         env = Path(self._tmp.name) / "demo.env"
         env.write_text("IDLESCAN_DEMO=true\n")
         code, out, err = run_cli(
-            "check", "0x1111111111111111111111111111111111111111",
-            "--db", str(self.db), "--env-file", str(env),
+            "check",
+            "0x1111111111111111111111111111111111111111",
+            "--db",
+            str(self.db),
+            "--env-file",
+            str(env),
         )
         self.assertEqual(code, 0, err)
         self.assertIn("nothing was saved", out)
@@ -189,16 +205,19 @@ class PlatformCliTests(unittest.TestCase):
         self.assertIn("tracked", out)
 
         code, out, err = run_cli(
-            "check", "0x1111111111111111111111111111111111111111",
-            "--json", "--db", str(self.db), "--env-file", str(env),
+            "check",
+            "0x1111111111111111111111111111111111111111",
+            "--json",
+            "--db",
+            str(self.db),
+            "--env-file",
+            str(env),
         )
         self.assertEqual(code, 0, err)
         payload = json.loads(out)
         self.assertEqual(payload["totals"]["unclaimed"], 1)
 
-        code, _, err = run_cli(
-            "check", "not-an-address", "--db", str(self.db), "--env-file", str(env)
-        )
+        code, _, err = run_cli("check", "not-an-address", "--db", str(self.db), "--env-file", str(env))
         self.assertEqual(code, 1)
         self.assertIn("not a valid EVM address", err)
 
@@ -227,9 +246,12 @@ class PlatformCliTests(unittest.TestCase):
 
         with mock.patch.dict(os.environ, {"IDLESCAN_READ_ONLY": "true"}):
             code, _, err = run_cli(
-                "claims", "prepare", "demo-merkle",
+                "claims",
+                "prepare",
+                "demo-merkle",
                 "0x1111111111111111111111111111111111111111",
-                "--db", str(self.db),
+                "--db",
+                str(self.db),
             )
         self.assertEqual(code, 1)
         self.assertIn("read-only mode", err)
@@ -277,7 +299,9 @@ class PlatformCliTests(unittest.TestCase):
         self.assertEqual(wallets, 3)
         self.assertEqual(claims, 3)
 
-        code, out, err = run_cli("backup", "--out", str(Path(self._tmp.name) / "b2.db"), "--json", "--db", str(self.db))
+        code, out, err = run_cli(
+            "backup", "--out", str(Path(self._tmp.name) / "b2.db"), "--json", "--db", str(self.db)
+        )
         self.assertEqual(code, 0, err)
         self.assertTrue(json.loads(out)["path"].endswith("b2.db"))
 

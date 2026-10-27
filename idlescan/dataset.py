@@ -54,9 +54,7 @@ class DatasetIndex(Mapping[str, Claim]):
     """A disk-backed claim mapping used for large datasets."""
 
     def __init__(self, *, directory: Path | None = None) -> None:
-        handle = tempfile.NamedTemporaryFile(
-            prefix="idlescan-dataset-", suffix=".db", dir=directory, delete=False
-        )
+        handle = tempfile.NamedTemporaryFile(prefix="idlescan-dataset-", suffix=".db", dir=directory, delete=False)
         self.path = Path(handle.name)
         handle.close()
         self._connection = sqlite3.connect(self.path)
@@ -107,13 +105,14 @@ class DatasetIndex(Mapping[str, Claim]):
         return int(self._connection.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
 
     def items(self) -> Iterator[tuple[str, Claim]]:
-        for row in self._connection.execute(
-            "SELECT address, idx, amount, proof FROM claims ORDER BY address"
-        ):
-            yield row[0], Claim(
-                index=int(row[1]),
-                amount=int(row[2]),
-                proof=tuple(bytes.fromhex(item) for item in row[3].split(",") if item),
+        for row in self._connection.execute("SELECT address, idx, amount, proof FROM claims ORDER BY address"):
+            yield (
+                row[0],
+                Claim(
+                    index=int(row[1]),
+                    amount=int(row[2]),
+                    proof=tuple(bytes.fromhex(item) for item in row[3].split(",") if item),
+                ),
             )
 
     def close(self) -> None:
@@ -368,7 +367,9 @@ def _stream_dataset(path: Path, *, drop_id: str, use_index: bool) -> ClaimDatase
                 if key == "claims":
                     if stream.peek() == "[":
                         for entry in _read_claims_array(stream):
-                            address = entry.get("account") or entry.get("address") if isinstance(entry, Mapping) else None
+                            address = (
+                                entry.get("account") or entry.get("address") if isinstance(entry, Mapping) else None
+                            )
                             if address:
                                 _store_claim(store, address, _claim_from_entry(str(address), entry))
                     elif stream.peek() == "{":
@@ -446,9 +447,7 @@ def parse_dataset_file(
     except OSError as exc:
         raise DatasetError(f"cannot read dataset: {exc}") from exc
     if size > max_bytes:
-        raise DatasetError(
-            f"dataset is {size} bytes, above the {max_bytes}-byte safety cap"
-        )
+        raise DatasetError(f"dataset is {size} bytes, above the {max_bytes}-byte safety cap")
     if size <= stream_threshold:
         try:
             payload = json.loads(target.read_text())
@@ -460,4 +459,3 @@ def parse_dataset_file(
             raise DatasetError("dataset must be a JSON object")
         return ClaimDataset.from_mapping(payload, source=str(target))
     return _stream_dataset(target, drop_id=drop_id, use_index=True)
-

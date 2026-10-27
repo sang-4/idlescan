@@ -189,11 +189,14 @@ def stage_archive(config: dict, wheel: Path, sdist: Path) -> Path:
             raise SystemExit(f"{name} still contains {PLACEHOLDER}")
         _write(stage / name, text)
 
-    _write(stage / "START_HERE.txt", START_HERE.format(
-        version=version,
-        release_name=config.get("release_name", "Release"),
-        support=config["support_email"],
-    ))
+    _write(
+        stage / "START_HERE.txt",
+        START_HERE.format(
+            version=version,
+            release_name=config.get("release_name", "Release"),
+            support=config["support_email"],
+        ),
+    )
     _write(stage / "examples" / ".env.example", ENV_EXAMPLE)
     shutil.copy2(ROOT / "examples" / "airdrops.example.json", stage / "examples" / "airdrops.example.json")
     for artefact in (wheel, sdist):
@@ -257,7 +260,7 @@ def validate(stage: Path, archive: Path, config: dict) -> None:
             for word in BANNED:
                 if word.encode() in data.lower():
                     raise SystemExit(f"banned word {word!r} in {name}")
-        relative = {name[len(prefix):] for name in names}
+        relative = {name[len(prefix) :] for name in names}
         for required in REQUIRED_IN_ARCHIVE:
             if required not in relative:
                 raise SystemExit(f"missing required file: {required}")

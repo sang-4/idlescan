@@ -44,7 +44,6 @@ GAS_ESTIMATE_NOTE = (
 )
 
 
-
 @dataclass(frozen=True)
 class FeeQuote:
     """A gas price plus the provenance needed to explain it."""
@@ -141,11 +140,7 @@ def quote_fees(rpc: Rpc, chain: Chain) -> FeeQuote:
         if isinstance(history, dict):
             base_values = history.get("baseFeePerGas") or []
             base = _hex_int(base_values[-1]) if base_values else None
-            rewards = [
-                _hex_int(item)
-                for row in (history.get("reward") or [])
-                for item in (row or [])
-            ]
+            rewards = [_hex_int(item) for row in (history.get("reward") or []) for item in (row or [])]
             tips = [value for value in rewards if value is not None]
             if base and base > 0 and tips:
                 tip = _median(tips)
@@ -182,9 +177,7 @@ def quote_fees(rpc: Rpc, chain: Chain) -> FeeQuote:
 
     price = _hex_int(rpc.request("eth_gasPrice"))
     if not price or price <= 0:
-        raise RpcError(
-            f"{chain.name}: no usable fee quote ({'; '.join(errors) or 'empty gasPrice'})"
-        )
+        raise RpcError(f"{chain.name}: no usable fee quote ({'; '.join(errors) or 'empty gasPrice'})")
     # A gasPrice-only node still accepts EIP-1559 fields.  Doubling it gives the
     # transaction room to land if the base fee rises; the cost used for ranking
     # stays at the node's own quote and the quality is marked partial.
@@ -204,9 +197,7 @@ def quote_fees(rpc: Rpc, chain: Chain) -> FeeQuote:
 
 
 def _estimate_gas_units(rpc: Rpc, wallet: str, distributor: str, data: str) -> int:
-    estimate = rpc.request(
-        "eth_estimateGas", {"from": wallet, "to": distributor, "data": data}
-    )
+    estimate = rpc.request("eth_estimateGas", {"from": wallet, "to": distributor, "data": data})
     if isinstance(estimate, str):
         units = int(estimate, 16)
     elif isinstance(estimate, int):
@@ -222,17 +213,11 @@ def _with_headroom(units: int, headroom_pct: int = GAS_LIMIT_HEADROOM_PCT) -> in
     return int(math.ceil(units * (100 + headroom_pct) / 100))
 
 
-def _l1_fee(
-    rpc: Rpc, chain: Chain, data: str
-) -> tuple[int | None, str, str | None]:
+def _l1_fee(rpc: Rpc, chain: Chain, data: str) -> tuple[int | None, str, str | None]:
     """Return ``(l1_fee_wei, quality, note)`` for the chain's configured strategy."""
     strategy = chain.l1_fee
     if strategy in ("none", "included"):
-        note = (
-            "L1 data fee included in the node's gas estimate"
-            if strategy == "included"
-            else None
-        )
+        note = "L1 data fee included in the node's gas estimate" if strategy == "included" else None
         return 0, FULL, note
     if strategy not in ("op_stack", "scroll"):
         return None, PARTIAL, "this chain's L1 data fee is not modelled - cost excludes it"

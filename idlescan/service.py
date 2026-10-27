@@ -121,12 +121,7 @@ class PlatformService:
     def _recover_stale_jobs(self) -> None:
         """Mark jobs left ``running`` after a restart as interrupted."""
         with self.db.connect() as connection:
-            rows = [
-                dict(row)
-                for row in connection.execute(
-                    "SELECT id FROM jobs WHERE status = 'running'"
-                ).fetchall()
-            ]
+            rows = [dict(row) for row in connection.execute("SELECT id FROM jobs WHERE status = 'running'").fetchall()]
         for row in rows:
             self.db.update_job(
                 row["id"],
@@ -153,9 +148,7 @@ class PlatformService:
                         drop.eligibility.dataset = str(candidate.resolve())
             existing = self.db.get_airdrop(drop.id)
             enabled = bool(existing["enabled"]) if existing else drop.enabled
-            self.db.upsert_airdrop(
-                drop.id, _drop_payload(drop), enabled=enabled, source="registry"
-            )
+            self.db.upsert_airdrop(drop.id, _drop_payload(drop), enabled=enabled, source="registry")
 
     def registry_drops(self) -> list[Airdrop]:
         """Enabled drops, parsed back from the DB payloads."""
@@ -200,17 +193,11 @@ class PlatformService:
             wallet["idle_usd"] = sum(h["usd_value"] or 0 for h in wallet_holdings)
             wallet["assets"] = len(wallet_holdings)
             wallet["unclaimed_usd"] = sum(
-                c["usd_value"] or 0
-                for c in wallet_claims
-                if c["status"] == UNCLAIMED and not c["expired"]
+                c["usd_value"] or 0 for c in wallet_claims if c["status"] == UNCLAIMED and not c["expired"]
             )
-            wallet["unclaimed"] = sum(
-                1 for c in wallet_claims if c["status"] == UNCLAIMED and not c["expired"]
-            )
+            wallet["unclaimed"] = sum(1 for c in wallet_claims if c["status"] == UNCLAIMED and not c["expired"])
             wallet["claimable_net_usd"] = sum(
-                c["net_usd"] or 0
-                for c in wallet_claims
-                if c["status"] == UNCLAIMED and not c["expired"]
+                c["net_usd"] or 0 for c in wallet_claims if c["status"] == UNCLAIMED and not c["expired"]
             )
         return wallets
 
@@ -266,7 +253,9 @@ class PlatformService:
 
         def progress(message: str) -> None:
             messages.append(message)
-            self.db.update_job(job_id, status="running", message=message, progress=min(0.9, 0.1 + 0.05 * len(messages)))
+            self.db.update_job(
+                job_id, status="running", message=message, progress=min(0.9, 0.1 + 0.05 * len(messages))
+            )
 
         try:
             self.db.update_job(job_id, status="running", message="building scanner")
@@ -402,9 +391,7 @@ class PlatformService:
             tier: str | None = None,
             persistent: bool = True,
         ) -> None:
-            key = self.db.alert_key(
-                kind, title, wallet=wallet, drop_id=drop_id, tier=tier
-            )
+            key = self.db.alert_key(kind, title, wallet=wallet, drop_id=drop_id, tier=tier)
             if persistent:
                 active_keys.add(key)
             alert_id = self.db.add_alert(
@@ -419,18 +406,16 @@ class PlatformService:
                 tier=tier,
             )
             if alert_id is not None:
-                new_alerts.append(
-                    {
-                        "id": alert_id,
-                        "kind": kind,
-                        "severity": severity,
-                        "title": public_text(title),
-                        "body": public_text(body),
-                        "wallet": wallet,
-                        "drop_id": drop_id,
-                        "created_at": _now(),
-                    }
-                )
+                new_alerts.append({
+                    "id": alert_id,
+                    "kind": kind,
+                    "severity": severity,
+                    "title": public_text(title),
+                    "body": public_text(body),
+                    "wallet": wallet,
+                    "drop_id": drop_id,
+                    "created_at": _now(),
+                })
 
         for claim in payload["claims"]:
             wallet = claim["wallet"]
@@ -701,9 +686,7 @@ class PlatformService:
                 "call": call,
                 "root": evidence.get("root"),
                 "distributor": row["distributor"],
-                "explorer_url": (
-                    f"{chain.explorer}/address/{row['distributor']}" if chain.explorer else None
-                ),
+                "explorer_url": (f"{chain.explorer}/address/{row['distributor']}" if chain.explorer else None),
                 "payable": evidence.get("payable"),
                 "provenance": evidence.get("provenance"),
             },
@@ -788,8 +771,7 @@ class PlatformService:
             return None
         try:
             rpc = (
-                self.rpc_factory
-                or (lambda c: Rpc(self.settings.rpc_endpoints(c), timeout=8, retries=1, label=c.key))
+                self.rpc_factory or (lambda c: Rpc(self.settings.rpc_endpoints(c), timeout=8, retries=1, label=c.key))
             )(chain)
             return rpc.request("eth_getTransactionReceipt", tx_hash)
         except Exception:  # noqa: BLE001 - receipt is best-effort
@@ -812,7 +794,11 @@ class PlatformService:
             raise NotFound("no snapshot to export")
         stamp = snapshot["created_at"][:10]
         if fmt == "json":
-            return (f"idlescan-{stamp}.json", "application/json", (json.dumps(snapshot["report"], indent=2) + "\n").encode())
+            return (
+                f"idlescan-{stamp}.json",
+                "application/json",
+                (json.dumps(snapshot["report"], indent=2) + "\n").encode(),
+            )
         if fmt == "csv":
             buffer = io.StringIO()
             buffer.write(
@@ -820,15 +806,14 @@ class PlatformService:
             )
             for holding in self.db.holdings(snapshot["id"]):
                 buffer.write(
-                    f"balance,{holding['chain']},{holding['wallet']},{holding['asset']},,"
-                    f"{holding['raw']},,,,,\n"
+                    f"balance,{holding['chain']},{holding['wallet']},{holding['asset']},,{holding['raw']},,,,,\n"
                 )
             for claim in self.db.claims(snapshot["id"]):
                 buffer.write(
                     f"claim,{claim['chain']},{claim['wallet']},{claim['name']},{claim['status']},"
                     f"{claim['amount_raw']},{claim['usd_price'] or ''},{claim['usd_value'] or ''},"
                     f"{claim['gas_usd'] or ''},{claim['net_usd'] if claim['net_usd'] is not None else ''},"
-                    f"\"{claim['note'] or ''}\",{claim['distributor']}\n"
+                    f'"{claim["note"] or ""}",{claim["distributor"]}\n'
                 )
             return (f"idlescan-{stamp}.csv", "text/csv", buffer.getvalue().encode())
         if fmt in ("md", "markdown"):
@@ -885,30 +870,28 @@ class PlatformService:
             rows = positions.get(row["id"], [])
             unclaimed = [r for r in rows if r["status"] == UNCLAIMED and not r["expired"]]
             days_left = _days_left(payload.get("claim_deadline"))
-            out.append(
-                {
-                    "id": row["id"],
-                    "enabled": bool(row["enabled"]),
-                    "source": row["source"],
-                    "name": payload.get("name", row["id"]),
-                    "chain": payload.get("chain"),
-                    "distributor": payload.get("distributor"),
-                    "token": payload.get("token"),
-                    "eligibility": (payload.get("eligibility") or {}).get("type"),
-                    "has_dataset": bool((payload.get("eligibility") or {}).get("dataset")),
-                    "deadline": payload.get("claim_deadline"),
-                    "notes": payload.get("notes"),
-                    "links": payload.get("links") or {},
-                    "positions": len(rows),
-                    "unclaimed": len(unclaimed),
-                    "unclaimed_usd": sum(r["usd_value"] or 0 for r in unclaimed),
-                    "claimable_net_usd": sum(r["net_usd"] or 0 for r in unclaimed),
-                    "gas_usd": sum(r["gas_usd"] or 0 for r in unclaimed),
-                    "days_left": days_left,
-                    "phase": _phase(rows, unclaimed, days_left),
-                    "risk": _risk(payload, rows, row["enabled"]),
-                }
-            )
+            out.append({
+                "id": row["id"],
+                "enabled": bool(row["enabled"]),
+                "source": row["source"],
+                "name": payload.get("name", row["id"]),
+                "chain": payload.get("chain"),
+                "distributor": payload.get("distributor"),
+                "token": payload.get("token"),
+                "eligibility": (payload.get("eligibility") or {}).get("type"),
+                "has_dataset": bool((payload.get("eligibility") or {}).get("dataset")),
+                "deadline": payload.get("claim_deadline"),
+                "notes": payload.get("notes"),
+                "links": payload.get("links") or {},
+                "positions": len(rows),
+                "unclaimed": len(unclaimed),
+                "unclaimed_usd": sum(r["usd_value"] or 0 for r in unclaimed),
+                "claimable_net_usd": sum(r["net_usd"] or 0 for r in unclaimed),
+                "gas_usd": sum(r["gas_usd"] or 0 for r in unclaimed),
+                "days_left": days_left,
+                "phase": _phase(rows, unclaimed, days_left),
+                "risk": _risk(payload, rows, row["enabled"]),
+            })
         return out
 
     def add_airdrop(self, payload: dict) -> dict:
@@ -922,9 +905,7 @@ class PlatformService:
         drop = drops[0]
         existing = self.db.get_airdrop(drop.id)
         if existing and existing["source"] != "custom":
-            raise Conflict(
-                f"airdrop {drop.id} is managed internally ({existing['source']}); choose another id"
-            )
+            raise Conflict(f"airdrop {drop.id} is managed internally ({existing['source']}); choose another id")
         self.db.upsert_airdrop(drop.id, _drop_payload(drop), enabled=True, source="custom")
         self.db.log("api", "airdrop.add", drop.id)
         return next(a for a in self.airdrops() if a["id"] == drop.id)
@@ -1034,9 +1015,7 @@ class PlatformService:
         self.chains.get(chain)  # raises ConfigError for unknown chain
         result = self.db.add_custom_token(chain, address, symbol, decimals, source=source)
         if result is None:
-            raise Conflict(
-                f"custom token {address} already tracked on {chain}"
-            )
+            raise Conflict(f"custom token {address} already tracked on {chain}")
         self.db.log("api", "custom_token.add", f"{chain}:{address}")
         return result
 
@@ -1067,7 +1046,9 @@ class PlatformService:
 
         chains: dict[str, dict] = {}
         for holding in holdings:
-            item = chains.setdefault(holding["chain"], {"chain": holding["chain"], "idle_usd": 0.0, "unclaimed_usd": 0.0})
+            item = chains.setdefault(
+                holding["chain"], {"chain": holding["chain"], "idle_usd": 0.0, "unclaimed_usd": 0.0}
+            )
             item["idle_usd"] += holding["usd_value"] or 0
         for claim in unclaimed:
             item = chains.setdefault(claim["chain"], {"chain": claim["chain"], "idle_usd": 0.0, "unclaimed_usd": 0.0})
@@ -1233,7 +1214,8 @@ class PlatformService:
             item["usd_value"] += claim["usd_value"] or 0
             item["net_usd"] += claim["net_usd"] or 0
         status_breakdown = sorted(
-            by_status.values(), key=lambda item: status_order.index(item["status"]) if item["status"] in status_order else 99
+            by_status.values(),
+            key=lambda item: status_order.index(item["status"]) if item["status"] in status_order else 99,
         )
 
         unclaimed = [c for c in claims if c["status"] == UNCLAIMED and not c["expired"]]
@@ -1299,25 +1281,54 @@ class PlatformService:
                 "net_usd": row["net_usd"],
             }
             if earlier is None:
-                changes.append({**base, "kind": "new", "from": None, "to": row["status"],
-                                "delta": row["net_usd"] or 0, "previous_net_usd": None})
+                changes.append({
+                    **base,
+                    "kind": "new",
+                    "from": None,
+                    "to": row["status"],
+                    "delta": row["net_usd"] or 0,
+                    "previous_net_usd": None,
+                })
                 continue
             if row["status"] == CLAIMED and earlier["status"] != CLAIMED:
-                changes.append({**base, "kind": "claimed", "from": earlier["status"], "to": row["status"],
-                                "delta": 0.0, "previous_net_usd": earlier["net_usd"]})
+                changes.append({
+                    **base,
+                    "kind": "claimed",
+                    "from": earlier["status"],
+                    "to": row["status"],
+                    "delta": 0.0,
+                    "previous_net_usd": earlier["net_usd"],
+                })
                 continue
             if row["expired"] and not earlier["expired"]:
-                changes.append({**base, "kind": "expired", "from": earlier["status"], "to": "expired",
-                                "delta": 0.0, "previous_net_usd": earlier["net_usd"]})
+                changes.append({
+                    **base,
+                    "kind": "expired",
+                    "from": earlier["status"],
+                    "to": "expired",
+                    "delta": 0.0,
+                    "previous_net_usd": earlier["net_usd"],
+                })
                 continue
             if row["proof_verified"] != earlier["proof_verified"]:
-                changes.append({**base, "kind": "proof", "from": earlier["proof_verified"],
-                                "to": row["proof_verified"], "delta": 0.0,
-                                "previous_net_usd": earlier["net_usd"]})
+                changes.append({
+                    **base,
+                    "kind": "proof",
+                    "from": earlier["proof_verified"],
+                    "to": row["proof_verified"],
+                    "delta": 0.0,
+                    "previous_net_usd": earlier["net_usd"],
+                })
                 continue
             if row["status"] != earlier["status"]:
-                changes.append({**base, "kind": "status", "from": earlier["status"], "to": row["status"],
-                                "delta": 0.0, "previous_net_usd": earlier["net_usd"]})
+                changes.append({
+                    **base,
+                    "kind": "status",
+                    "from": earlier["status"],
+                    "to": row["status"],
+                    "delta": 0.0,
+                    "previous_net_usd": earlier["net_usd"],
+                })
                 continue
             if (
                 row["status"] == UNCLAIMED
@@ -1326,17 +1337,31 @@ class PlatformService:
                 and earlier["net_usd"] is not None
                 and abs(row["net_usd"] - earlier["net_usd"]) >= 1.0
             ):
-                changes.append({**base, "kind": "value", "from": earlier["status"], "to": row["status"],
-                                "delta": row["net_usd"] - earlier["net_usd"],
-                                "previous_net_usd": earlier["net_usd"]})
+                changes.append({
+                    **base,
+                    "kind": "value",
+                    "from": earlier["status"],
+                    "to": row["status"],
+                    "delta": row["net_usd"] - earlier["net_usd"],
+                    "previous_net_usd": earlier["net_usd"],
+                })
         for key, row in before.items():
             if key in current:
                 continue
             changes.append({
-                "kind": "removed", "drop_id": row["drop_id"], "name": row["name"], "chain": row["chain"],
-                "wallet": row["wallet"], "status": row["status"], "expired": bool(row["expired"]),
-                "usd_value": row["usd_value"], "net_usd": row["net_usd"], "from": row["status"],
-                "to": None, "delta": 0.0, "previous_net_usd": row["net_usd"],
+                "kind": "removed",
+                "drop_id": row["drop_id"],
+                "name": row["name"],
+                "chain": row["chain"],
+                "wallet": row["wallet"],
+                "status": row["status"],
+                "expired": bool(row["expired"]),
+                "usd_value": row["usd_value"],
+                "net_usd": row["net_usd"],
+                "from": row["status"],
+                "to": None,
+                "delta": 0.0,
+                "previous_net_usd": row["net_usd"],
             })
 
         priority = {"claimed": 0, "new": 1, "expired": 2, "proof": 3, "status": 4, "value": 5, "removed": 6}
@@ -1346,10 +1371,14 @@ class PlatformService:
             counts[change["kind"]] = counts.get(change["kind"], 0) + 1
         current_totals = snapshot["totals"] or {}
         previous_totals = (previous["totals"] or {}) if previous else {}
-        delta = {
-            key: (current_totals.get(key) or 0) - (previous_totals.get(key) or 0)
-            for key in ("idle_usd", "unclaimed_usd", "combined_usd")
-        } if previous else None
+        delta = (
+            {
+                key: (current_totals.get(key) or 0) - (previous_totals.get(key) or 0)
+                for key in ("idle_usd", "unclaimed_usd", "combined_usd")
+            }
+            if previous
+            else None
+        )
 
         return {
             "snapshot": {"id": snapshot["id"], "created_at": snapshot["created_at"], "trigger": snapshot["trigger"]},
@@ -1378,9 +1407,8 @@ class PlatformService:
                 "net_usd": drop["claimable_net_usd"],
             }
             for drop in self.airdrops()
-            if needle in " ".join(
-                str(drop.get(key) or "") for key in ("id", "name", "chain", "distributor", "token")
-            ).lower()
+            if needle
+            in " ".join(str(drop.get(key) or "") for key in ("id", "name", "chain", "distributor", "token")).lower()
         ][:limit]
         wallets = [
             {
@@ -1391,9 +1419,7 @@ class PlatformService:
                 "unclaimed_usd": wallet.get("unclaimed_usd") or 0,
             }
             for wallet in self.list_wallets()
-            if needle in " ".join(
-                str(wallet.get(key) or "") for key in ("address", "label", "tags")
-            ).lower()
+            if needle in " ".join(str(wallet.get(key) or "") for key in ("address", "label", "tags")).lower()
         ][:limit]
         transactions = [
             {
@@ -1473,18 +1499,35 @@ class PlatformService:
             buffer = io.StringIO()
             writer = _csv_writer(buffer)
             writer.writerow([
-                "drop", "status", "expired", "wallet", "label", "amount_raw", "decimals", "usd_value",
-                "gas_usd", "net_usd", "proof_verified", "deadline", "note",
+                "drop",
+                "status",
+                "expired",
+                "wallet",
+                "label",
+                "amount_raw",
+                "decimals",
+                "usd_value",
+                "gas_usd",
+                "net_usd",
+                "proof_verified",
+                "deadline",
+                "note",
             ])
             for row in detail["positions"]:
                 writer.writerow([
-                    detail["name"], row["status"], "yes" if row["expired"] else "no", row["wallet"],
-                    row.get("wallet_label") or "", row["amount_raw"], row["decimals"],
+                    detail["name"],
+                    row["status"],
+                    "yes" if row["expired"] else "no",
+                    row["wallet"],
+                    row.get("wallet_label") or "",
+                    row["amount_raw"],
+                    row["decimals"],
                     row["usd_value"] if row["usd_value"] is not None else "",
                     row["gas_usd"] if row["gas_usd"] is not None else "",
                     row["net_usd"] if row["net_usd"] is not None else "",
                     "" if row["proof_verified"] is None else ("yes" if row["proof_verified"] else "no"),
-                    row["deadline"] or "", row["note"] or "",
+                    row["deadline"] or "",
+                    row["note"] or "",
                 ])
             return f"idlescan-{safe_id}-{stamp}.csv", "text/csv", buffer.getvalue().encode()
         if fmt in ("md", "markdown"):
@@ -1574,9 +1617,7 @@ class PlatformService:
         """
         from .selftest import WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED
 
-        counts = self.db.purge_demo_records(
-            [WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED]
-        )
+        counts = self.db.purge_demo_records([WALLET_CLAIMED, WALLET_EMPTY, WALLET_UNCLAIMED])
         if any(counts.values()):
             self.db.log("system", "demo.purge", json.dumps(counts, sort_keys=True))
         return counts
@@ -1633,9 +1674,7 @@ def _apply_min_usd(report: ScanReport, min_usd: float) -> None:
     if min_usd <= 0:
         return
     report.holdings = [
-        holding
-        for holding in report.holdings
-        if holding.usd_value is None or holding.usd_value >= min_usd
+        holding for holding in report.holdings if holding.usd_value is None or holding.usd_value >= min_usd
     ]
 
 
@@ -1676,13 +1715,7 @@ def _phase(rows: list[dict], unclaimed: list[dict], days_left: int | None) -> st
 
 
 def _ics_escape(value: str) -> str:
-    return (
-        str(value)
-        .replace("\\", "\\\\")
-        .replace("\n", "\\n")
-        .replace(";", "\\;")
-        .replace(",", "\\,")
-    )
+    return str(value).replace("\\", "\\\\").replace("\n", "\\n").replace(";", "\\;").replace(",", "\\,")
 
 
 def _ics_fold(line: str, limit: int = 75) -> str:

@@ -110,6 +110,7 @@ class AllocationViewTests(ModesBase):
                 raw = bytes.fromhex((tx.get("data") or "").removeprefix("0x"))
                 if to == ALLOC_DISTRIBUTOR and raw[:4] == SEL_CLAIMED:
                     from idlescan.rpc import RpcError
+
                     raise RpcError("node timeout")
                 return super()._eth_call(tx, block="latest")
 
@@ -133,9 +134,7 @@ class DatasetUrlTests(ModesBase):
         )
 
     def world_payload(self, world, wallet):
-        index, amount = next(
-            (i, amt) for i, (account, amt) in enumerate(world.claims) if account == wallet
-        )
+        index, amount = next((i, amt) for i, (account, amt) in enumerate(world.claims) if account == wallet)
         proof = build_proof(index, wallet, amount, world.claims, encoding="packed")
         return {
             "merkleRoot": "0x" + world.root.hex(),

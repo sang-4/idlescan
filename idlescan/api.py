@@ -325,9 +325,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         except BrokenPipeError:
             return
         except Exception as exc:  # noqa: BLE001
-            self._send_json(
-                500, {"error": redact_text(f"{exc.__class__.__name__}: {exc}")}
-            )
+            self._send_json(500, {"error": redact_text(f"{exc.__class__.__name__}: {exc}")})
         finally:
             if metrics is not None:
                 metrics.record(
@@ -362,9 +360,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         client = self.client_address[0]
         allowed, retry = self.limiter.check((client, kind), capacity, window)
         if not allowed:
-            error = TooManyRequests(
-                f"rate limit exceeded for {kind} requests; retry after {retry}s"
-            )
+            error = TooManyRequests(f"rate limit exceeded for {kind} requests; retry after {retry}s")
             error.retry_after = retry
             raise error
 
@@ -391,9 +387,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         if length < 0:
             raise ServiceError("invalid Content-Length header")
         if length > self.settings.max_body_bytes:
-            raise PayloadTooLarge(
-                f"request body {length} bytes exceeds the {self.settings.max_body_bytes}-byte limit"
-            )
+            raise PayloadTooLarge(f"request body {length} bytes exceeds the {self.settings.max_body_bytes}-byte limit")
         if length and self.command in ("POST", "PATCH"):
             content_type = (self.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
             if content_type != "application/json":
@@ -411,9 +405,7 @@ class ApiHandler(BaseHTTPRequestHandler):
 
     def _check_origin(self) -> None:
         if self.headers.get("x-idlescan") != "1":
-            raise ServiceError(
-                "missing X-Idlescan header; state-changing requests must come from the app"
-            )
+            raise ServiceError("missing X-Idlescan header; state-changing requests must come from the app")
         origin = self.headers.get("origin")
         if origin:
             host = urlparse(origin).netloc
@@ -424,9 +416,7 @@ class ApiHandler(BaseHTTPRequestHandler):
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
 
-    def _send_json(
-        self, status: int, payload: Any, *, extra_headers: dict[str, str] | None = None
-    ) -> None:
+    def _send_json(self, status: int, payload: Any, *, extra_headers: dict[str, str] | None = None) -> None:
         body = json.dumps(payload, default=str).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json; charset=utf-8")
@@ -612,9 +602,7 @@ def wallets_bulk(handler, params, query, body):
 
 
 def wallets_update(handler, params, query, body):
-    wallet = _svc(handler).add_wallet(
-        params["address"], str(body.get("label", "")), str(body.get("tags", ""))
-    )
+    wallet = _svc(handler).add_wallet(params["address"], str(body.get("label", "")), str(body.get("tags", "")))
     return {"wallet": wallet}
 
 
@@ -916,9 +904,7 @@ def run(settings: Settings, *, service: PlatformService | None = None) -> int:
 
     refresh = None
     if settings.refresh_minutes > 0:
-        refresh = threading.Thread(
-            target=_refresh_loop, args=(service, settings.refresh_minutes, stop), daemon=True
-        )
+        refresh = threading.Thread(target=_refresh_loop, args=(service, settings.refresh_minutes, stop), daemon=True)
         refresh.start()
         print(f"auto-refresh: every {settings.refresh_minutes} minute(s)")
     try:

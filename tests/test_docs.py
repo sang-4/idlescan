@@ -48,9 +48,7 @@ class ConfigDocSyncTests(unittest.TestCase):
         keys = set(re.findall(r'"(IDLESCAN_[A-Z_0-9]+)"', source))
         missing = [key for key in sorted(keys) if key not in self.doc]
         if missing:
-            self.fail(
-                f"Environment variables not documented in docs/CONFIGURATION.md: {missing}"
-            )
+            self.fail(f"Environment variables not documented in docs/CONFIGURATION.md: {missing}")
 
 
 if __name__ == "__main__":

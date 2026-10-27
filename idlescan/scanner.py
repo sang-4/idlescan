@@ -195,9 +195,7 @@ class ScanReport:
     @property
     def claim_value(self) -> float | None:
         values = [
-            c.usd_value
-            for c in self.claims
-            if c.status == UNCLAIMED and not c.expired and c.usd_value is not None
+            c.usd_value for c in self.claims if c.status == UNCLAIMED and not c.expired and c.usd_value is not None
         ]
         return sum(values) if values else None
 
@@ -269,9 +267,7 @@ class Scanner:
             report.warnings.append(f"{chain.name}: unreachable ({describe_error(exc)})")
             raise
         if actual != chain.chain_id:
-            report.warnings.append(
-                f"{chain.name}: RPC reports chain id {actual}, expected {chain.chain_id} - skipped"
-            )
+            report.warnings.append(f"{chain.name}: RPC reports chain id {actual}, expected {chain.chain_id} - skipped")
             raise RpcError(f"chain id mismatch for {chain.name}")
         self._rpcs[chain.key] = rpc
         return rpc
@@ -295,9 +291,7 @@ class Scanner:
             try:
                 report.block_numbers[chain.key] = rpc.block_number()
             except RpcError as exc:
-                report.warnings.append(
-                    f"{chain.name}: block number unavailable ({describe_error(exc)})"
-                )
+                report.warnings.append(f"{chain.name}: block number unavailable ({describe_error(exc)})")
             refresh = getattr(rpc, "refresh_endpoint_health", None)
             if callable(refresh):
                 try:
@@ -318,9 +312,7 @@ class Scanner:
                 self._check_drop(chain, rpc, drop, normalised, report)
 
             chain_end = dt.datetime.now(dt.timezone.utc)
-            report.phase_timings[f"chain:{chain.key}"] = (
-                chain_end - chain_start
-            ).total_seconds()
+            report.phase_timings[f"chain:{chain.key}"] = (chain_end - chain_start).total_seconds()
 
         # Scan chains concurrently, bounded by scan_workers.  A failing chain
         # degrades to a warning and never aborts the scan (WP-13).
@@ -332,19 +324,14 @@ class Scanner:
                     pool.shutdown(wait=False, cancel_futures=True)
                     break
                 if dt.datetime.now(dt.timezone.utc) > deadline:
-                    report.warnings.append(
-                        f"scan exceeded {self.timeout_seconds}s timeout; "
-                        "partial results returned"
-                    )
+                    report.warnings.append(f"scan exceeded {self.timeout_seconds}s timeout; partial results returned")
                     pool.shutdown(wait=False, cancel_futures=True)
                     break
                 try:
                     future.result()
                 except Exception as exc:  # noqa: BLE001 - chain failure degrades
                     chain = futures[future]
-                    report.warnings.append(
-                        f"{chain.name}: scan failed ({exc.__class__.__name__})"
-                    )
+                    report.warnings.append(f"{chain.name}: scan failed ({exc.__class__.__name__})")
 
         self._apply_prices(report)
         report.price_error = self.prices.error
@@ -357,12 +344,8 @@ class Scanner:
         return report
 
     # -------------------------------------------------------------- balances
-    def _scan_balances(
-        self, chain: Chain, rpc: Rpc, wallets: Sequence[str], report: ScanReport
-    ) -> None:
-        calls: list[tuple[str, Sequence[Any]]] = [
-            ("eth_getBalance", [wallet, "latest"]) for wallet in wallets
-        ]
+    def _scan_balances(self, chain: Chain, rpc: Rpc, wallets: Sequence[str], report: ScanReport) -> None:
+        calls: list[tuple[str, Sequence[Any]]] = [("eth_getBalance", [wallet, "latest"]) for wallet in wallets]
         tokens = self._resolve_tokens(chain, rpc, report) if self.tokens.get(chain.key) else []
         token_calls: list[tuple[Token, str, str]] = []
         for token in tokens:
@@ -375,9 +358,7 @@ class Scanner:
         for index, wallet in enumerate(wallets):
             value = results[index]
             if isinstance(value, Exception) or not isinstance(value, str):
-                report.warnings.append(
-                    f"{chain.name}: balance lookup failed for {wallet} ({describe_error(value)})"
-                )
+                report.warnings.append(f"{chain.name}: balance lookup failed for {wallet} ({describe_error(value)})")
                 continue
             if int(value, 16) > 0:
                 report.holdings.append(
@@ -412,9 +393,7 @@ class Scanner:
                 )
             )
 
-    def _resolve_tokens(
-        self, chain: Chain, rpc: Rpc, report: ScanReport
-    ) -> list[Token]:
+    def _resolve_tokens(self, chain: Chain, rpc: Rpc, report: ScanReport) -> list[Token]:
         configured = self.tokens.get(chain.key, [])
         if not configured:
             return []
@@ -441,9 +420,7 @@ class Scanner:
             for token in missing:
                 calls.append(("eth_getCode", [token.address, "latest"]))
                 calls.append(("eth_call", [{"to": token.address, "data": calldata("decimals()")}, "latest"]))
-                calls.append(
-                    ("eth_call", [{"to": token.address, "data": calldata("symbol()")}, "latest"])
-                )
+                calls.append(("eth_call", [{"to": token.address, "data": calldata("symbol()")}, "latest"]))
             results = rpc.batch(calls)
             for index, token in enumerate(missing):
                 code, dec_raw, sym_raw = results[index * 3 : index * 3 + 3]
@@ -559,9 +536,7 @@ class Scanner:
         if eligibility.type == "merkle_dataset":
             path = Path(eligibility.dataset or "")
             try:
-                dataset = parse_dataset_file(
-                    path, drop_id=drop.id, max_bytes=self.max_dataset_bytes
-                )
+                dataset = parse_dataset_file(path, drop_id=drop.id, max_bytes=self.max_dataset_bytes)
                 provenance = dataset_provenance(
                     path,
                     drop_id=drop.id,
@@ -609,9 +584,7 @@ class Scanner:
                 if isinstance(raw, str) and len(raw) >= 66:
                     root = bytes.fromhex(raw[2:66])
             except RpcError as exc:
-                report.warnings.append(
-                    f"{drop.name}: could not read {drop.root_method} ({describe_error(exc)})"
-                )
+                report.warnings.append(f"{drop.name}: could not read {drop.root_method} ({describe_error(exc)})")
 
         if eligibility.type == "dataset_url":
             self._check_merkle_remote(chain, rpc, drop, wallets, report, root)
@@ -622,7 +595,10 @@ class Scanner:
             for wallet in wallets:
                 report.claims.append(
                     self._claim_row(
-                        drop, chain, wallet, NO_SOURCE,
+                        drop,
+                        chain,
+                        wallet,
+                        NO_SOURCE,
                         note="claims dataset missing; see warning",
                         symbol=self._symbols.get(drop.id, drop.name),
                     )
@@ -639,14 +615,15 @@ class Scanner:
             for wallet in wallets:
                 report.claims.append(
                     self._claim_row(
-                        drop, chain, wallet, ERROR,
+                        drop,
+                        chain,
+                        wallet,
+                        ERROR,
                         note="dataset merkle root does not match the contract on chain",
                         symbol=self._symbols.get(drop.id, drop.name),
                     )
                 )
-            report.warnings.append(
-                f"{drop.name}: dataset root {dataset.root.hex()} != on-chain root {root.hex()}"
-            )
+            report.warnings.append(f"{drop.name}: dataset root {dataset.root.hex()} != on-chain root {root.hex()}")
             return
 
         encoding, double_hash = self._resolve_leaf_mode(drop, dataset, root, report)
@@ -658,7 +635,10 @@ class Scanner:
             if claim is None:
                 report.claims.append(
                     self._claim_row(
-                        drop, chain, wallet, NO_ALLOCATION,
+                        drop,
+                        chain,
+                        wallet,
+                        NO_ALLOCATION,
                         note=f"address absent from {len(dataset)}-claim dataset",
                         symbol=self._symbols.get(drop.id, drop.name),
                         source=dataset.source,
@@ -681,7 +661,10 @@ class Scanner:
             if proof_ok is False:
                 report.claims.append(
                     self._claim_row(
-                        drop, chain, wallet, ERROR,
+                        drop,
+                        chain,
+                        wallet,
+                        ERROR,
                         amount_raw=claim.amount,
                         note="proof in dataset does not verify against the on-chain root",
                         symbol=self._symbols.get(drop.id, drop.name),
@@ -696,7 +679,10 @@ class Scanner:
             if claimed is None:
                 note = "claim state unavailable from RPC"
             row = self._claim_row(
-                drop, chain, wallet, status,
+                drop,
+                chain,
+                wallet,
+                status,
                 amount_raw=claim.amount,
                 symbol=self._symbols.get(drop.id, drop.name),
                 source=dataset.source,
@@ -727,16 +713,40 @@ class Scanner:
             except urllib.error.HTTPError as exc:
                 if exc.code in (404, 400):
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, NO_ALLOCATION, note=f"no claim record (HTTP {exc.code})", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                        self._claim_row(
+                            drop,
+                            chain,
+                            wallet,
+                            NO_ALLOCATION,
+                            note=f"no claim record (HTTP {exc.code})",
+                            symbol=self._symbols.get(drop.id, drop.name),
+                            source=redact_url(url),
+                        )
                     )
                 else:
                     report.claims.append(
-                        self._claim_row(drop, chain, wallet, ERROR, note=f"claim API HTTP {exc.code}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                        self._claim_row(
+                            drop,
+                            chain,
+                            wallet,
+                            ERROR,
+                            note=f"claim API HTTP {exc.code}",
+                            symbol=self._symbols.get(drop.id, drop.name),
+                            source=redact_url(url),
+                        )
                     )
                 continue
             except (urllib.error.URLError, TimeoutError, OSError, ValueError) as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"claim API failed: {describe_error(exc)}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        ERROR,
+                        note=f"claim API failed: {describe_error(exc)}",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=redact_url(url),
+                    )
                 )
                 continue
 
@@ -744,7 +754,15 @@ class Scanner:
                 payload.get("claims") or payload.get("proof") or payload.get("amount")
             ):
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API returned no allocation", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        NO_ALLOCATION,
+                        note="claim API returned no allocation",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=redact_url(url),
+                    )
                 )
                 continue
 
@@ -752,16 +770,34 @@ class Scanner:
             if not isinstance(entry, dict) or wallet.lower() not in {k.lower() for k in entry}:
                 entry = {wallet: entry} if "index" in entry or "amount" in entry else entry
             try:
-                dataset = parse_dataset({"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=redact_url(url))
+                dataset = parse_dataset(
+                    {"claims": entry, "merkleRoot": payload.get("merkleRoot")}, source=redact_url(url)
+                )
             except ValueError as exc:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, note=f"bad claim payload: {exc}", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        ERROR,
+                        note=f"bad claim payload: {exc}",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=redact_url(url),
+                    )
                 )
                 continue
             claim = dataset.get(wallet)
             if claim is None:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="claim API has no entry for this address", symbol=self._symbols.get(drop.id, drop.name), source=redact_url(url))
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        NO_ALLOCATION,
+                        note="claim API has no entry for this address",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=redact_url(url),
+                    )
                 )
                 continue
 
@@ -769,12 +805,28 @@ class Scanner:
             proof_ok: bool | None = None
             if root is not None:
                 proof_ok = verify_proof(
-                    claim.index, wallet, claim.amount, claim.proof, root,
-                    encoding=encoding, double_hash=double_hash, sort_pairs=dataset.sort_pairs,
+                    claim.index,
+                    wallet,
+                    claim.amount,
+                    claim.proof,
+                    root,
+                    encoding=encoding,
+                    double_hash=double_hash,
+                    sort_pairs=dataset.sort_pairs,
                 )
             if proof_ok is False:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, ERROR, amount_raw=claim.amount, note="API proof does not verify against on-chain root (do not trust this API)", symbol=self._symbols.get(drop.id, drop.name), source=url, proof_verified=False)
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        ERROR,
+                        amount_raw=claim.amount,
+                        note="API proof does not verify against on-chain root (do not trust this API)",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=url,
+                        proof_verified=False,
+                    )
                 )
                 continue
 
@@ -782,8 +834,14 @@ class Scanner:
             claimed = claimed_flags[0]
             status = CLAIMED if claimed is True else (UNCLAIMED if claimed is False else UNKNOWN)
             row = self._claim_row(
-                drop, chain, wallet, status,
-                amount_raw=claim.amount, symbol=self._symbols.get(drop.id, drop.name), source=url, proof_verified=proof_ok,
+                drop,
+                chain,
+                wallet,
+                status,
+                amount_raw=claim.amount,
+                symbol=self._symbols.get(drop.id, drop.name),
+                source=url,
+                proof_verified=proof_ok,
                 note=None if claimed is not None else "claim state unavailable from RPC",
                 root=root.hex() if root else None,
             )
@@ -812,14 +870,21 @@ class Scanner:
             for encoding, double in (("packed", False), ("abi", False), ("packed", True), ("abi", True)):
                 if samples and all(
                     verify_proof(
-                        claim.index, addr, claim.amount, claim.proof, root,
-                        encoding=encoding, double_hash=double, sort_pairs=dataset.sort_pairs,
+                        claim.index,
+                        addr,
+                        claim.amount,
+                        claim.proof,
+                        root,
+                        encoding=encoding,
+                        double_hash=double,
+                        sort_pairs=dataset.sort_pairs,
                     )
                     for addr, claim in samples
                 ):
                     chosen = (encoding, double)
-                    self.verbose(f"  {drop.name}: leaf encoding detected as {encoding}"
-                                 f"{' (double-hashed)' if double else ''}")
+                    self.verbose(
+                        f"  {drop.name}: leaf encoding detected as {encoding}{' (double-hashed)' if double else ''}"
+                    )
                     break
             if chosen is None and samples:
                 report.warnings.append(
@@ -827,9 +892,13 @@ class Scanner:
                     f"dataset and contract may not belong together"
                 )
         if chosen is None:
-            chosen = ("packed", False) if eligibility.leaf_encoding == "auto" else (
-                eligibility.leaf_encoding,
-                eligibility.double_hash,
+            chosen = (
+                ("packed", False)
+                if eligibility.leaf_encoding == "auto"
+                else (
+                    eligibility.leaf_encoding,
+                    eligibility.double_hash,
+                )
             )
             if eligibility.leaf_encoding == "auto":
                 report.warnings.append(
@@ -844,9 +913,7 @@ class Scanner:
             return rpc.eth_call_quorum(to, data)
         return rpc.eth_call(to, data)
 
-    def _read_claimed(
-        self, rpc: Rpc, drop: Airdrop, indexes: Sequence[int | None]
-    ) -> list[bool | None]:
+    def _read_claimed(self, rpc: Rpc, drop: Airdrop, indexes: Sequence[int | None]) -> list[bool | None]:
         calls: list[tuple[str, Sequence[Any]]] = []
         slots: list[int] = []
         for position, index in enumerate(indexes):
@@ -902,27 +969,27 @@ class Scanner:
         assert eligibility is not None
         try:
             alloc_calls = [
-                ("eth_call", [{"to": drop.distributor, "data": calldata(eligibility.method, ["address"], [wallet])}, "latest"])
+                (
+                    "eth_call",
+                    [{"to": drop.distributor, "data": calldata(eligibility.method, ["address"], [wallet])}, "latest"],
+                )
                 for wallet in wallets
             ]
         except (AbiError, ValueError) as exc:
             report.warnings.append(f"{drop.name}: bad eligibility method {eligibility.method!r}: {exc}")
             return
         if getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
-            allocations = [
-                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
-                for call in alloc_calls
-            ]
+            allocations = [self._call_critical(rpc, drop.distributor, call[1][0]["data"]) for call in alloc_calls]
         else:
             allocations = rpc.batch(alloc_calls)
 
-        eligible = [
-            (wallet, _decode_uint(result))
-            for wallet, result in zip(wallets, allocations, strict=False)
-        ]
+        eligible = [(wallet, _decode_uint(result)) for wallet, result in zip(wallets, allocations, strict=False)]
         try:
             claimed_calls = [
-                ("eth_call", [{"to": drop.distributor, "data": calldata(drop.claimed_method, ["address"], [wallet])}, "latest"])
+                (
+                    "eth_call",
+                    [{"to": drop.distributor, "data": calldata(drop.claimed_method, ["address"], [wallet])}, "latest"],
+                )
                 for wallet, amount in eligible
                 if amount
             ]
@@ -930,10 +997,7 @@ class Scanner:
             report.warnings.append(f"{drop.name}: bad claimed method {drop.claimed_method!r}: {exc}")
             return
         if claimed_calls and getattr(rpc, "quorum", 1) >= 2 and hasattr(rpc, "eth_call_quorum"):
-            claimed_values = [
-                self._call_critical(rpc, drop.distributor, call[1][0]["data"])
-                for call in claimed_calls
-            ]
+            claimed_values = [self._call_critical(rpc, drop.distributor, call[1][0]["data"]) for call in claimed_calls]
         else:
             claimed_values = rpc.batch(claimed_calls) if claimed_calls else []
 
@@ -944,15 +1008,28 @@ class Scanner:
         for wallet, amount in eligible:
             if not amount:
                 report.claims.append(
-                    self._claim_row(drop, chain, wallet, NO_ALLOCATION, note="allocation is zero", symbol=self._symbols.get(drop.id, drop.name), source=eligibility.method)
+                    self._claim_row(
+                        drop,
+                        chain,
+                        wallet,
+                        NO_ALLOCATION,
+                        note="allocation is zero",
+                        symbol=self._symbols.get(drop.id, drop.name),
+                        source=eligibility.method,
+                    )
                 )
                 continue
             claimed = claimed_by_wallet.get(wallet)
             status = CLAIMED if claimed is True else (UNCLAIMED if claimed is False else UNKNOWN)
             row = self._claim_row(
-                drop, chain, wallet, status,
-                amount_raw=amount, decimals=eligibility.decimals,
-                symbol=self._symbols.get(drop.id, drop.name), source=eligibility.method,
+                drop,
+                chain,
+                wallet,
+                status,
+                amount_raw=amount,
+                decimals=eligibility.decimals,
+                symbol=self._symbols.get(drop.id, drop.name),
+                source=eligibility.method,
                 note=None if claimed is not None else "claim state unavailable from RPC",
             )
             if status == UNCLAIMED:
@@ -960,9 +1037,7 @@ class Scanner:
             report.claims.append(row)
 
     # -------------------------------------------------------------------- gas
-    def _attach_gas(
-        self, chain: Chain, rpc: Rpc, row: ClaimCheck, wallet: str, report: ScanReport
-    ) -> None:
+    def _attach_gas(self, chain: Chain, rpc: Rpc, row: ClaimCheck, wallet: str, report: ScanReport) -> None:
         """Attach a labelled gas estimate; failure stays ``unavailable``, never zero."""
         if not self.estimate_gas or not row.calldata:
             row.gas_note = "gas estimation disabled for this scan"
@@ -990,17 +1065,14 @@ class Scanner:
         if cost_wei is None:
             if estimate.quality == UNAVAILABLE:
                 report.warnings.append(
-                    f"{row.name}: gas estimate unavailable ({estimate.note or 'no fee data'}); "
-                    "net value is unknown"
+                    f"{row.name}: gas estimate unavailable ({estimate.note or 'no fee data'}); net value is unknown"
                 )
             return
         row.gas_native = gas_cost_native(cost_wei)
         buffered = buffered_wei(cost_wei, self.gas_buffer_pct)
         row.gas_cost_native_buffered = gas_cost_native(buffered)
         if estimate.quality == PARTIAL:
-            report.warnings.append(
-                f"{row.name}: gas estimate is partial ({estimate.note or 'L1 component missing'})"
-            )
+            report.warnings.append(f"{row.name}: gas estimate is partial ({estimate.note or 'L1 component missing'})")
 
     # ----------------------------------------------------------------- prices
     def _apply_prices(self, report: ScanReport) -> None:
@@ -1056,9 +1128,6 @@ def _decode_bool(value: Any) -> bool | None:
         except ValueError:
             return None
     return None
-
-
-
 
 
 def _is_expired(deadline: str | None) -> bool:

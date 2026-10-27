@@ -75,9 +75,7 @@ def verify_drops(
         rpc = clients[chain.key]
 
         try:
-            result.checks.append(
-                Check("chain id", True, f"{int(rpc.request('eth_chainId'), 16)} ({chain.name})")
-            )
+            result.checks.append(Check("chain id", True, f"{int(rpc.request('eth_chainId'), 16)} ({chain.name})"))
         except (RpcError, TypeError, ValueError) as exc:
             result.checks.append(Check("chain id", False, describe_error(exc)))
             continue
@@ -120,9 +118,7 @@ def verify_drops(
                 calldata(drop.claimed_method, ["uint256" if isinstance(probe_arg, int) else "address"], [probe_arg]),
             )
             ok = isinstance(raw, str) and len(raw) >= 66
-            result.checks.append(
-                Check(drop.claimed_method, ok, "returns bool" if ok else "returned no data")
-            )
+            result.checks.append(Check(drop.claimed_method, ok, "returns bool" if ok else "returned no data"))
         except (RpcError, AbiError) as exc:
             result.checks.append(Check(drop.claimed_method, False, describe_error(exc)))
 
@@ -133,9 +129,7 @@ def verify_drops(
                 if has_token:
                     raw = rpc.eth_call(drop.token, calldata("decimals()"))
                     decimals = int(raw[2:66], 16) if isinstance(raw, str) and len(raw) >= 66 else None
-                    result.checks.append(
-                        Check("token", decimals == drop.token_decimals, f"decimals={decimals}")
-                    )
+                    result.checks.append(Check("token", decimals == drop.token_decimals, f"decimals={decimals}"))
                 else:
                     result.checks.append(Check("token", False, "no contract at token address"))
             except (RpcError, AbiError, ValueError) as exc:
@@ -169,9 +163,7 @@ def verify_drops(
             result.checks.append(Check("dataset", True, f"{len(dataset)} claims from {path}"))
             if root is not None:
                 if dataset.root and dataset.root != root:
-                    result.checks.append(
-                        Check("dataset root", False, "dataset root != on-chain root")
-                    )
+                    result.checks.append(Check("dataset root", False, "dataset root != on-chain root"))
                 else:
                     result.checks.append(Check("dataset root", True, "matches contract"))
                 proof_ok = detect_proof_mode(dataset, root)
@@ -200,8 +192,14 @@ def detect_proof_mode(dataset, root: bytes, limit: int = 5) -> tuple[str, bool] 
     for encoding, double in (("packed", False), ("abi", False), ("packed", True), ("abi", True)):
         if all(
             verify_proof(
-                claim.index, addr, claim.amount, claim.proof, root,
-                encoding=encoding, double_hash=double, sort_pairs=dataset.sort_pairs,
+                claim.index,
+                addr,
+                claim.amount,
+                claim.proof,
+                root,
+                encoding=encoding,
+                double_hash=double,
+                sort_pairs=dataset.sort_pairs,
             )
             for addr, claim in samples
         ):
